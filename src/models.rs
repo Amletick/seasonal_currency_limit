@@ -150,6 +150,19 @@ pub fn efficiency(level: u32, required: u32, gathering: bool) -> f64 {
 /// The highest ability level an Aniimo reaches.
 pub const MAX_ANIIMO_LEVEL: u32 = 4;
 
+/// Abilities that stop short of [`MAX_ANIIMO_LEVEL`]. There is no level-4 Perfumery Aniimo in
+/// the game yet, so a plan that put one on the Phonolfactory Table would be promising a speed
+/// nobody can reach.
+const ABILITY_CEILINGS: &[(&str, u32)] = &[("Perfumery", 3)];
+
+/// The highest level an Aniimo of `ability` reaches (see [`ABILITY_CEILINGS`]).
+pub fn max_level_for(ability: &str) -> u32 {
+    ABILITY_CEILINGS
+        .iter()
+        .find(|(name, _)| *name == ability)
+        .map_or(MAX_ANIIMO_LEVEL, |(_, level)| *level)
+}
+
 /// Facilities with no personality bonus at all, so no Aniimo works them faster than the level
 /// alone gives (checked in game on the Dance Pad Polisher and Aniipod Maker).
 pub const FACILITIES_WITHOUT_PERSONALITY: [&str; 2] = ["Dance Pad Polisher", "Aniipod Maker"];
@@ -446,7 +459,11 @@ impl AniimoRequirements {
     /// a personality bonus (see [`has_personality_bonus`]).
     pub fn worker_for_at(&self, item: &str, facility: &str, setup: AniimoSetup) -> Worker {
         match setup {
-            AniimoSetup::Best(level) => Worker::new(level, has_personality_bonus(facility)),
+            // An ability that stops below the level asked for caps the worker there.
+            AniimoSetup::Best(level) => {
+                let ceiling = self.get(item).map_or(MAX_ANIIMO_LEVEL, |(ability, _)| max_level_for(ability));
+                Worker::new(level.min(ceiling), has_personality_bonus(facility))
+            }
             AniimoSetup::Minimum => Worker::new(self.get(item).map_or(1, |(_, level)| level), false),
         }
     }

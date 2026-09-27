@@ -678,8 +678,12 @@ function attachSkipHandlers() {
 // What the player has toward a level-up, by item name ('coins' for coins).
 let levelUpStock = {};
 
-// The highest ability level an Aniimo reaches; mirrors `MAX_ANIIMO_LEVEL` in models.rs.
+// The highest ability level an Aniimo reaches, and the abilities that stop short of it; mirrors
+// `MAX_ANIIMO_LEVEL` and `ABILITY_CEILINGS` in models.rs. There is no level-4 Perfumery Aniimo in
+// the game yet.
 const MAX_ANIIMO_LEVEL = 4;
+const ABILITY_CEILINGS = { Perfumery: 3 };
+const maxLevelFor = ability => ABILITY_CEILINGS[ability] ?? MAX_ANIIMO_LEVEL;
 
 // The best ability level to plan for. Level-4 Aniimo take some getting, so a player who hasn't
 // got one plans for level 3 instead (see `aniimo_setup_from` in wasm.rs for the names).
@@ -2451,7 +2455,7 @@ function formatRecipeAniimo(recipe, facility) {
             `<span class="job"><span class="job-step">${step}${times > 1 ? ` &times;${times}` : ''}</span> ${abilityTag(ability)}${level > 1 ? ` Lv.${level}+` : ''}</span>`).join('')}</span>`;
     }
     const [ability, minLevel] = recipe.aniimo;
-    const best = `best Lv.${bestAniimoLevel()}${facility.personality ? ' ' + facility.personality : ''}`;
+    const best = `best Lv.${Math.min(bestAniimoLevel(), maxLevelFor(ability))}${facility.personality ? ' ' + facility.personality : ''}`;
     return `<span>${abilityTag(ability)} Lv.${minLevel}+<span class="recipe-best">${best}</span></span>`;
 }
 
