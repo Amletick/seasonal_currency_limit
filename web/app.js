@@ -1417,17 +1417,6 @@ function listOf(items) {
     return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
-// Where to put the second building. The solver's offset runs corner to corner, so for two 2x2
-// buildings in a row the clear space between them is two tiles less; a diagonal one is easier to
-// follow as the corner position itself, which is also what the diagram draws.
-function gapText(dx, dy = 0) {
-    const tiles = n => `${n} tile${n === 1 ? '' : 's'}`;
-    if (dy === 0) {
-        const between = dx - 2;
-        return between <= 0 ? 'Side by side, touching.' : `In a row, ${tiles(between)} between them.`;
-    }
-    return `Corner to corner, the second sits ${tiles(dx)} along and ${tiles(dy)} up from the first.`;
-}
 
 
 // A growing environment named in its own colour.
@@ -2017,7 +2006,6 @@ function renderFacilityPlan(plan) {
         return `
             <div class="facility-category">
                 <h4 class="facility-category-title">${unit.building} ${modeTag(modes[0])}<span class="env-head-sep">|</span>${unit.partner[0]} ${modeTag(modes[1])}${middle ? `<span class="env-head-sep">|</span>Overlap ${modeTag(middle)}` : ''}</h4>
-                <p class="hint small">${gapText(unit.partner[1], unit.partner[2])}</p>
                 <div class="env-unit">
                     ${renderEnvironmentDiagram(zones.flatMap(z => z.layout), zones[0].mode, unit.building, zones.flatMap(z => z.rows), unit, zones)}
                     <div class="env-unit-table">${facilityPlanTableOf(zones.map(z => ({ label: modeTag(z.mode), rows: z.rows })))}</div>
