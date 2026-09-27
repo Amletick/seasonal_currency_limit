@@ -13,8 +13,9 @@
 // `unlocks` maps each facility level to the RV (Homeland) level that unlocks it. `counts[i]` is how
 // many of the facility you can place at RV level i + 1; an RV level past the end of the list keeps
 // the last count. Simple mode uses both (see `simpleSetup`). Counts are confirmed in game up to RV
-// level 12 for the Heat Furnace and Simmering Pot and RV level 11 for the rest; past that,
-// Farmland, Woodland and Mine follow the game's pattern and the others keep their last count.
+// level 13 for the Cooling Unit, Sunlamp and Phonolfactory Table, RV level 12 for the Heat
+// Furnace and Simmering Pot and RV level 11 for the rest; past that, Farmland, Woodland and Mine
+// follow the game's pattern and the others keep their last count.
 //
 // Facilities marked "Not yet verified in game" in their tooltip haven't had their numbers
 // confirmed in game yet.
@@ -82,13 +83,13 @@ export const FACILITIES = [
     {
         name: 'Cooling Unit', slug: 'cooling-unit', defaultCount: 0, category: 'Environment', hasLevels: false,
         unlocks: { 1: 7 },
-        counts: [0, 0, 0, 0, 0, 0, 1],
+        counts: [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 2],
         tooltip: "Provides Cool or Freeze growing conditions for crops that need one&#10;The calculator picks whichever mode is more profitable.&#10;Covers a 9x9 area around itself; how many plots fit depends on what shares it."
     },
     {
         name: 'Sunlamp', slug: 'sunlamp', defaultCount: 0, category: 'Environment', hasLevels: false,
         unlocks: { 1: 9 },
-        counts: [0, 0, 0, 0, 0, 0, 0, 0, 1],
+        counts: [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2],
         tooltip: "Provides Adequate growing conditions for crops that need one&#10;Covers a 9x9 area around itself; how many plots fit depends on what shares it."
     },
     {
@@ -124,7 +125,7 @@ export const FACILITIES = [
     {
         name: 'Phonolfactory Table', slug: 'phonolfactory-table', defaultCount: 0, category: 'Materials Processing', hasWorker: true, ability: 'Perfumery', personality: 'Instinctive',
         unlocks: { 1: 6, 2: 7, 3: 10, 4: 14, 5: 17, 6: 19 },
-        counts: [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        counts: [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2],
         tooltip: "Lv.1: Bamboo Joss Stick&#10;Lv.2: Rose Incense, Cherry Incense&#10;Lv.3: Lavender Incense, Lemon Incense, Advanced Lemon Incense&#10;Lv.4: Herbal Ginseng Aroma&#10;Lv.5: Soap, Premium Soap&#10;Lv.6: Orange Flower Incense, Mixed Perfume, Lotion, Premium Mixed Perfume"
     },
     {
