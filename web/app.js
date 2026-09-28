@@ -663,7 +663,7 @@ function improvementCandidates(base, setup) {
         if (!base.exclude.includes(recipe.name) || skipped.has(recipe.name)) continue;
         if (recipe.facility && !owns(recipe.facility)) continue;
         candidates.push({
-            label: recipe.note ? `Unlock the ${prettyItem(recipe.name)} Recipe Note` : `Unlock ${prettyItem(recipe.name)}`,
+            label: recipe.note ? `Recipe Note: ${prettyItem(recipe.name)}` : `Unlock ${prettyItem(recipe.name)}`,
             input: { ...base, exclude: base.exclude.filter(name => name !== recipe.name) },
         });
     }
@@ -671,7 +671,7 @@ function improvementCandidates(base, setup) {
     for (const name of [...skipped].sort((a, b) => prettyItem(a).localeCompare(prettyItem(b)))) {
         if (!base.exclude.includes(name)) continue;
         candidates.push({
-            label: `Stop skipping ${prettyItem(name)}`,
+            label: `Unskip ${prettyItem(name)}`,
             input: { ...base, exclude: base.exclude.filter(n => n !== name) },
         });
     }
@@ -683,7 +683,7 @@ function improvementCandidates(base, setup) {
             const level = base.aniimo_levels[ability] ?? defaultLevelFor(ability);
             if (level >= defaultLevelFor(ability)) continue;
             candidates.push({
-                label: `A level-${level + 1} ${ability} Aniimo`,
+                label: `${ability} Aniimo Lv ${level + 1}`,
                 input: { ...base, aniimo_levels: { ...base.aniimo_levels, [ability]: level + 1 } },
             });
         }
@@ -692,7 +692,7 @@ function improvementCandidates(base, setup) {
             const ability = FACILITIES.find(f => f.name === name)?.ability;
             if (!ability || !owns(name) || worker.suitability >= defaultLevelFor(ability)) continue;
             candidates.push({
-                label: `A level-${worker.suitability + 1} ${ability} Aniimo on the ${name}`,
+                label: `${name} Aniimo Lv ${worker.suitability + 1}`,
                 input: { ...base, workers: { ...base.workers, [name]: { ...worker, suitability: worker.suitability + 1 } } },
             });
         }
@@ -708,7 +708,7 @@ function improvementCandidates(base, setup) {
             for (const next of levelsAbove(level, allowed.modules[module] ?? 0)) {
                 candidates.push({
                     group: `module:${module}`,
-                    label: `${MODULE_NAMES[module] || module} at level ${next}`,
+                    label: `${MODULE_NAMES[module] || module} Lv ${next}`,
                     input: { ...base, modules: { ...base.modules, [module]: next } },
                 });
             }
@@ -721,7 +721,7 @@ function improvementCandidates(base, setup) {
                 for (const level of levelsAbove(0, capLevel)) {
                     candidates.push({
                         group: `another:${f.name}`,
-                        label: f.hasLevels === false || capLevel === 1 ? `Another ${f.name}` : `Another ${f.name}, at level ${level}`,
+                        label: f.hasLevels === false || capLevel === 1 ? `+1 ${f.name}` : `+1 ${f.name} (Lv ${level})`,
                         input: { ...base, facilities: { ...base.facilities, [f.name]: [...tiers, { count: 1, level }] } },
                     });
                 }
@@ -735,7 +735,7 @@ function improvementCandidates(base, setup) {
                     .concat({ count: 1, level });
                 candidates.push({
                     group: `upgrade:${f.name}`,
-                    label: tierCount(tiers) > 1 ? `One ${f.name} at level ${level}` : `${f.name} at level ${level}`,
+                    label: tierCount(tiers) > 1 ? `1 ${f.name} to Lv ${level}` : `${f.name} to Lv ${level}`,
                     input: { ...base, facilities: { ...base.facilities, [f.name]: raised } },
                 });
             }
@@ -799,7 +799,7 @@ const RANK_MIN_GAIN = 1e-3;
 function improvementGain(result) {
     const base = ranking.base;
     if (!result || result.top == null || !base || base.top == null) return null;
-    const about = result.proven === false || base.proven === false ? 'about ' : '';
+    const about = result.proven === false || base.proven === false ? '~' : '';
     const { multiplier, suffix } = RATE_UNIT_SECONDS[document.getElementById('rate-unit').value] || RATE_UNIT_SECONDS.second;
     if (result.top > base.top * (1 + RANK_MIN_GAIN) + 1e-12) {
         if (ranking.measure === 'level_up') {
@@ -808,15 +808,15 @@ function improvementGain(result) {
             return {
                 score: 1 + (before ? (before - after) / before : 1),
                 text: before
-                    ? `Level-up ${about}${formatDuration(before - after)} sooner (${formatDuration(after)} instead of ${formatDuration(before)})`
-                    : `Makes the level-up reachable, in ${about}${formatDuration(after)}`,
+                    ? `${about}−${formatDuration(before - after)} level-up (${formatDuration(after)})`
+                    : `Level-up in ${about}${formatDuration(after)}`,
             };
         }
         const label = ranking.measure === 'coins' ? 'Home Coins' : priorityLabel(ranking.measure, planContext?.aniipod);
-        const added = `+${formatRate((result.top - base.top) * multiplier)} ${label}${suffix}`;
+        const added = `+${formatRate((result.top - base.top) * multiplier)}${suffix}`;
         return {
             score: 1 + (base.top > 0 ? (result.top - base.top) / base.top : 1),
-            text: base.top > 0 ? `${about}+${formatPercent((result.top - base.top) / base.top)} ${label} (${added})` : `${about}${added}`,
+            text: base.top > 0 ? `${about}+${formatPercent((result.top - base.top) / base.top)} ${label} (${added})` : `${about}${added} ${label}`,
         };
     }
     const coins = result.coins;
@@ -824,7 +824,7 @@ function improvementGain(result) {
         const gain = (coins.value - coins.base) / coins.base;
         return {
             score: gain,
-            text: `${about}+${formatPercent(gain)} Home Coins (+${formatRate((coins.value - coins.base) * multiplier)}${suffix}), same ${ranking.measure === 'level_up' ? 'level-up time' : priorityLabel(ranking.measure, planContext?.aniipod)}`,
+            text: `${about}+${formatPercent(gain)} Home Coins (+${formatRate((coins.value - coins.base) * multiplier)}${suffix})`,
         };
     }
     return null;
@@ -846,9 +846,9 @@ function renderImprovements() {
     card.style.display = 'block';
     const checked = ranking.results.filter(Boolean).length;
     const total = ranking.candidates.length;
-    const within = ranking.homeLevel ? ` within what RV ${ranking.homeLevel} allows` : '';
-    const by = ranking.measure === 'level_up' ? 'how soon the level-up comes'
-        : ranking.measure === 'coins' ? 'Home Coins' : priorityLabel(ranking.measure, planContext?.aniipod);
+    const within = ranking.homeLevel ? ` RV ${ranking.homeLevel} limits.` : '';
+    const by = ranking.measure === 'level_up' ? 'level-up time, then Home Coins'
+        : ranking.measure === 'coins' ? 'Home Coins' : `${priorityLabel(ranking.measure, planContext?.aniipod)}, then Home Coins`;
     // One row per change, or per group: the least of it that gets the most it can (see
     // `improvementCandidates`).
     const best = new Map();
@@ -863,13 +863,13 @@ function renderImprovements() {
     const options = new Set(ranking.candidates.map((c, i) => c.group || `#${i}`)).size;
     const hint = document.getElementById('improve-hint');
     if (total === 0) {
-        hint.textContent = `Nothing left to unlock or upgrade${within}.`;
+        hint.textContent = `Nothing left to unlock or upgrade.${within}`;
     } else if (!ranking.done) {
-        hint.textContent = `Checking changes you could make${within}, by ${by}: ${checked} of ${total} so far.`;
+        hint.textContent = `Checking ${checked} of ${total}…${within}`;
     } else if (rows.length === 0) {
-        hint.textContent = `None of the ${options} changes you could make${within} would improve this plan.`;
+        hint.textContent = `No improvements found (${options} checked).${within}`;
     } else {
-        hint.textContent = `Changes you could make${within}, best first by ${by}. ${options - rows.length} of the ${options} checked wouldn't help.`;
+        hint.textContent = `Ranked by ${by}. ${rows.length} of ${options} help.${within}`;
     }
     document.getElementById('improve-list').innerHTML = rows.length
         ? `<ol class="improve-list">${rows.map(r => `<li><span class="improve-name">${r.candidate.label}</span><span class="improve-gain">${r.gain.text}</span></li>`).join('')}</ol>`
