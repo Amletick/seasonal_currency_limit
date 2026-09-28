@@ -1212,6 +1212,11 @@ function renderSeedTable(plan) {
     }
     const amount = formatRate;
     const totalCost = rows.reduce((sum, r) => sum + r.cost, 0);
+    const totalWheat = rows.reduce((sum, r) => sum + r.wheat, 0);
+    const totals = [
+        totalCost > 0 ? `${amount(totalCost)} Home Coins` : '',
+        totalWheat > 0 ? `${amount(totalWheat)} ${SEASON.currency}` : '',
+    ].filter(Boolean).join(' + ');
     card.style.display = 'block';
     const per = levelUp
         ? `until RV ${planContext.target}`
@@ -1226,7 +1231,7 @@ function renderSeedTable(plan) {
                 <td>${amount(r.seeds)}</td>
                 <td>${r.wheat > 0 ? `${amount(r.wheat)} ${SEASON.currency}` : r.cost > 0 ? `${amount(r.cost)} Home Coins` : 'free'}</td>
             </tr>`).join('')}</tbody>
-            ${rows.length > 1 && totalCost > 0 ? `<tfoot><tr><td colspan="3">Total</td><td>${amount(totalCost)} Home Coins</td></tr></tfoot>` : ''}
+            ${rows.length > 1 && totals ? `<tfoot><tr><td colspan="3">Total</td><td>${totals}</td></tr></tfoot>` : ''}
         </table>`;
 }
 
@@ -1372,7 +1377,7 @@ function showError(message) {
 function renderGoalTargets(plan) {
     const select = document.getElementById('goal-target');
     const previous = select.value;
-    const rows = priorityRows(plan).filter(r => !r.spent);
+    const rows = priorityRows(plan);
     select.innerHTML = rows.map(r => `<option value="${r.target}">${goalName(r)}</option>`).join('');
     if (rows.some(r => r.target === previous)) select.value = previous;
 }
@@ -2265,7 +2270,7 @@ function updateRateDisplay(pickUnit = false) {
     // Step the unit up until the smallest rate reads at least 1 (Aniipods per hour, Rough Lumber
     // per hour, not 0.01 per second); a plain coin rate only needs to read above zero.
     const costRates = (lastPlan.level_up?.requirements || []).map(r => r.per_second);
-    const rates = (rows ? rows.filter(r => !r.spent).map(r => r.perSecond) : costRates).filter(r => r > 1e-9);
+    const rates = (rows ? rows.map(r => r.perSecond) : costRates).filter(r => r > 1e-9);
     const smallest = rates.length ? Math.min(...rates) : lastPlan.rate_per_second;
     const least = rates.length ? 1 : 0.05;
     while (pickUnit && smallest * RATE_UNIT_SECONDS[select.value].multiplier < least) {
@@ -2280,8 +2285,7 @@ function updateRateDisplay(pickUnit = false) {
         if (select.closest('#priority-rates')) rateLine.appendChild(select);
         const label = CURRENCY_LABELS[lastPlan.currency] || lastPlan.currency;
         const points = lastPlan.season_points > 1e-12 ? ` + ${formatRate(lastPlan.season_points * multiplier)} ${SEASON.points}` : '';
-        const wheat = lastPlan.season_wheat > 1e-12 ? ` (seeds take ${formatRate(lastPlan.season_wheat * multiplier)} ${SEASON.currency}${suffix})` : '';
-        document.getElementById('plan-rate').textContent = `${formatNumber(lastPlan.rate_per_second * multiplier)} ${label}${points}${suffix}${wheat}`;
+        document.getElementById('plan-rate').textContent = `${formatNumber(lastPlan.rate_per_second * multiplier)} ${label}${points}${suffix}`;
         document.getElementById('rate-label').textContent = 'Your rate';
         rateLine.style.display = '';
         table.innerHTML = '';
@@ -2333,9 +2337,6 @@ function priorityRows(plan) {
     // During the season, points come with every season item sold, ranked or not.
     if (plan.season_points != null && !rows.some(r => r.target === 'season_points')) {
         rows.push({ rank: null, target: 'season_points', label: SEASON.points, perSecond: plan.season_points, items: [], missing: null });
-    }
-    if (plan.season_wheat > 1e-12) {
-        rows.push({ rank: null, target: 'season_wheat', label: `${SEASON.currency} spent on seeds`, perSecond: plan.season_wheat, items: [], missing: null, spent: true });
     }
     return rows;
 }
@@ -2526,7 +2527,7 @@ async function runFindPlan() {
 // keystroke of the goal-amount fields. No-op until a plan exists.
 async function runTimeToGoal() {
     if (!lastPlan || !lastPlan.success || planContext?.levelUp) return;
-    const rows = priorityRows(lastPlan).filter(r => !r.spent);
+    const rows = priorityRows(lastPlan);
     const chosen = rows.find(r => r.target === document.getElementById('goal-target').value) || rows[0];
     const name = goalName(chosen);
     document.getElementById('target-amount-label').textContent = `Target ${name}`;

@@ -285,7 +285,7 @@ fn load_items_with_season() -> Option<Vec<ProductionItem>> {
 
 // Moonray Wheat is treated as unlimited, so season seeds cost nothing a plan counts and all six
 // plots grow Moondew Radish or Waxing Moon Pepper (8 a batch, 74 coins each), far more per plot
-// than potato. The plan still reports the 4 wheat a batch its seeds take.
+// than potato.
 #[test]
 fn exact_season_crops_fill_every_plot() {
     let Some(items) = load_items_with_season() else { return };
@@ -294,8 +294,6 @@ fn exact_season_crops_fill_every_plot() {
     let grow = items.iter().find(|i| i.name == "moondew_radish").unwrap().production_time;
     let expected = 6.0 * 8.0 * 74.0 / grow;
     assert!((plan.rate_per_second - expected).abs() < 1e-9, "got {}, expected {expected}", plan.rate_per_second);
-    let spend = aniimax::exact::season_seed_spend(&plan, &items) * 86_400.0;
-    assert!((spend - 6.0 * 4.0 * 86_400.0 / grow).abs() < 1e-6, "{spend} wheat a day");
 }
 
 // Points as a priority: every season crop sold raw counts 1, which beats cooking 16 of them into

@@ -188,12 +188,6 @@ const STOCK_UP_COIN_WEIGHT: f64 = 1e-6;
 /// covers doesn't leave the model unbounded.
 const MAX_PACE: f64 = PACE_UNIT;
 
-/// The season currency `exact` spends on seeds per second.
-pub fn season_seed_spend(exact: &ExactPlan, items: &[ProductionItem]) -> f64 {
-    let all: HashMap<&str, &ProductionItem> = items.iter().map(|i| (i.name.as_str(), i)).collect();
-    exact.recipe_rates.iter().filter_map(|(name, rate)| all.get(name.as_str())?.season.map(|s| rate * s.seed_cost)).sum()
-}
-
 /// Every byproduct any recipe makes (e.g. `"Wood Blocks"`, `"Mineral Sand"`), sorted.
 pub fn byproducts(items: &[ProductionItem]) -> Vec<String> {
     let mut names: Vec<String> = items.iter().filter_map(|i| i.byproduct.as_ref().map(|(r, _)| r.clone())).collect();

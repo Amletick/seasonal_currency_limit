@@ -1136,9 +1136,6 @@ pub struct JsProductionPlan {
     /// During the season, its points per second from everything the plan sells.
     #[serde(default)]
     pub season_points: Option<f64>,
-    /// During the season, the Moonray Wheat per second its seeds cost.
-    #[serde(default)]
-    pub season_wheat: Option<f64>,
 }
 
 /// What a plan makes of one priority.
@@ -1196,7 +1193,6 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         level_up: None,
         priorities: vec![],
         season_points: None,
-        season_wheat: None,
     }
 }
 
@@ -1434,7 +1430,6 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     js.level_up = report;
     if prepared.input.season {
         js.season_points = Some(crate::exact::target_rate(&exact, &prepared.items, crate::models::SEASON_POINTS));
-        js.season_wheat = Some(crate::exact::season_seed_spend(&exact, &prepared.items));
     }
     js.priorities = prepared
         .input
@@ -1607,7 +1602,6 @@ impl PreparedInput {
             level_up: None,
             priorities: vec![],
             season_points: None,
-            season_wheat: None,
         }
     }
 }
