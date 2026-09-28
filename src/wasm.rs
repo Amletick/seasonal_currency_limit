@@ -967,6 +967,9 @@ pub struct JsPlanProduct {
     pub lead_time_seconds: f64,
     pub total_units: f64,
     pub total_value: f64,
+    /// Season points per unit sold (see [`crate::models::SeasonTerms::points`]); 0 outside a season.
+    #[serde(default)]
+    pub points: f64,
 }
 
 impl From<crate::models::PlanProduct> for JsPlanProduct {
@@ -980,6 +983,7 @@ impl From<crate::models::PlanProduct> for JsPlanProduct {
             lead_time_seconds: p.lead_time,
             total_units: p.total_units,
             total_value: p.total_value,
+            points: 0.0,
         }
     }
 }
@@ -1591,7 +1595,14 @@ impl PreparedInput {
             currency: plan.currency,
             rate_per_second: plan.rate_per_second,
             coin_items,
-            income_streams: plan.income_streams.into_iter().map(Into::into).collect(),
+            income_streams: plan
+                .income_streams
+                .into_iter()
+                .map(|stream| {
+                    let points = self.items.iter().find(|i| i.name == stream.item_name).and_then(|i| i.season).map_or(0.0, |s| s.points);
+                    JsPlanProduct { points, ..stream.into() }
+                })
+                .collect(),
             byproduct_rates: plan.byproduct_rates,
             environment_assignments: plan.environment_assignments.into_iter().map(Into::into).collect(),
             candidates_evaluated: plan.candidates_evaluated,

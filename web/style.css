@@ -2434,3 +2434,13 @@ tr:hover .skip-row,
 #season-config {
     margin-top: 0.75rem;
 }
+
+/* A column's unit under its name, e.g. "Profit" over "Home Coins/hour". */
+.th-unit {
+    display: block;
+    font-size: 0.7rem;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--text-muted);
+}

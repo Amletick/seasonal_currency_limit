@@ -1407,7 +1407,12 @@ function renderProductBreakdown(goalResult) {
 
     const unit = document.getElementById('rate-unit').value;
     const { multiplier, suffix } = RATE_UNIT_SECONDS[unit] || RATE_UNIT_SECONDS.second;
-    document.getElementById('product-breakdown-rate-header').textContent = `Profit${suffix}`;
+    document.getElementById('product-breakdown-rate-header').innerHTML = `Profit <span class="th-unit">Home Coins${suffix}</span>`;
+    // During the season, what each item counts toward the season's points.
+    const season = lastPlan?.season_points != null;
+    const pointsEach = new Map((lastPlan?.income_streams || []).map(s => [s.item_name, s.points || 0]));
+    document.getElementById('product-breakdown-points-header').hidden = !season;
+    const pointsCell = amount => season ? `<td>${amount > 0 ? formatNumber(amount) : '&mdash;'}</td>` : '';
 
     tbody.innerHTML = '';
     products.forEach(p => {
@@ -1428,6 +1433,7 @@ function renderProductBreakdown(goalResult) {
             <td>${wholeAmount.toLocaleString()}</td>
             <td>${formatRate(p.rate_per_second * multiplier)}</td>
             <td>${formatNumber(worth)}</td>
+            ${pointsCell(wholeAmount * (pointsEach.get(p.item_name) || 0))}
         `;
         tbody.appendChild(row);
     });
@@ -1441,6 +1447,7 @@ function renderProductBreakdown(goalResult) {
             <td>${Math.floor(amount).toLocaleString()}</td>
             <td>&mdash;</td>
             <td>not sold</td>
+            ${pointsCell(0)}
         `;
         tbody.appendChild(row);
     });
@@ -2543,15 +2550,19 @@ async function runTimeToGoal() {
             const resultJson = await callWorker('time_to_reach', JSON.stringify({ plan: lastPlan, target, current }));
             const result = JSON.parse(resultJson);
             displayGoal(result);
-            renderGoalAlso(rows, chosen, result.success ? result.total_time_seconds : null);
+            renderGoalAlso(rows, chosen, result.success ? result.total_time_seconds : null, result);
         } catch (error) {
             console.error('Goal calculation error:', error);
         }
         return;
     }
-    // Anything else comes in at its steady rate; the breakdown covers that long.
+    // Season points wait on each item's first batch, as coins do; anything else comes in at its
+    // steady rate. The breakdown covers that long.
     const needed = Math.max(0, target - current);
-    const seconds = needed <= 0 ? 0 : chosen.perSecond > 1e-12 ? needed / chosen.perSecond : null;
+    const seconds = needed <= 0 ? 0
+        : chosen.perSecond <= 1e-12 ? null
+        : chosen.target === 'season_points' ? timeToPoints(needed)
+        : needed / chosen.perSecond;
     if (seconds === null) {
         lastGoalResult = null;
         document.getElementById('total-time').textContent = chosen.missing || 'Not made by this plan';
@@ -2562,21 +2573,47 @@ async function runTimeToGoal() {
         return;
     }
     try {
-        const resultJson = await callWorker('time_to_reach', JSON.stringify({ plan: lastPlan, seconds }));
-        displayGoal(JSON.parse(resultJson));
+        const result = JSON.parse(await callWorker('time_to_reach', JSON.stringify({ plan: lastPlan, seconds })));
+        displayGoal(result);
         document.getElementById('amount-produced').textContent = formatNumber(Math.round(needed));
-        renderGoalAlso(rows, chosen, seconds);
+        renderGoalAlso(rows, chosen, seconds, result);
     } catch (error) {
         console.error('Goal calculation error:', error);
     }
 }
 
-// What else the plan makes by the time the goal is met, e.g. "4.6M coins, 39 Aniipod Mega".
-function renderGoalAlso(rows, chosen, seconds) {
+// Season points made in the first `seconds`: each item sold counts once its first batch is in
+// (see `production_over` in optimizer.rs, which does the same for coins).
+function pointsBy(seconds) {
+    return (lastPlan?.income_streams || [])
+        .reduce((sum, s) => sum + (s.points || 0) * s.units_per_second * Math.max(0, seconds - s.lead_time_seconds), 0);
+}
+
+// Seconds until the plan has made `needed` season points.
+function timeToPoints(needed) {
+    let lo = 0;
+    let hi = 3600;
+    while (pointsBy(hi) < needed) {
+        hi *= 2;
+        if (hi > 1e10) return null;
+    }
+    for (let i = 0; i < 100; i++) {
+        const mid = (lo + hi) / 2;
+        if (pointsBy(mid) >= needed) hi = mid; else lo = mid;
+    }
+    return hi;
+}
+
+// What else the plan makes by the time the goal is met, e.g. "4.6M Home Coins, 39 Aniipod Mega".
+// Home Coins and season points count from each item's first batch, as the goal itself does.
+function renderGoalAlso(rows, chosen, seconds, result) {
     const el = document.getElementById('goal-also');
+    const madeBy = r => r.target === 'coins' && result?.success ? result.amount_produced
+        : r.target === 'season_points' ? pointsBy(seconds)
+        : r.perSecond * seconds;
     const also = seconds > 0
         ? rows.filter(r => r !== chosen && r.perSecond > 1e-12)
-            .map(r => `${formatNumber(Math.floor(r.perSecond * seconds))} ${goalName(r)}`)
+            .map(r => `${formatNumber(Math.floor(madeBy(r)))} ${goalName(r)}`)
         : [];
     el.style.display = also.length ? 'block' : 'none';
     el.innerHTML = also.length ? `<span>By then you'll also have:</span> <strong>${also.join(', ')}</strong>` : '';
