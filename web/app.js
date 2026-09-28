@@ -147,19 +147,19 @@ function ensurePlanFor(setup) {
         .then(json => {
             if (runId !== planRunId) return;
             plansBySetup[setup] = JSON.parse(json);
-            if (selectedAniimoSetup() === setup) showSelectedPlan(false);
+            if (selectedAniimoSetup() === setup) showSelectedPlan();
         })
         .catch(error => console.warn('Could not work out the', setup, 'setup:', error));
 }
 
 // Shows the selected setup, and works it out first if this is the first time it's been asked for.
 function switchAniimoSetup() {
-    showSelectedPlan(false);
+    showSelectedPlan();
     ensurePlanFor(selectedAniimoSetup());
 }
 
 // Shows the plan for the selected Aniimo setup, or a "still working" note if it isn't ready.
-function showSelectedPlan(scroll) {
+function showSelectedPlan() {
     const setup = selectedAniimoSetup();
     const plan = plansBySetup[setup];
     const pending = document.getElementById('aniimo-pending');
@@ -169,7 +169,7 @@ function showSelectedPlan(scroll) {
     }
     pending.style.display = 'none';
     lastPlan = plan;
-    displayPlan(plan, scroll);
+    displayPlan(plan);
     if (plan.success) {
         runTimeToGoal();
         rankImprovementsFor(setup);
@@ -3066,7 +3066,7 @@ function updateRateUnitDisplays() {
 // Render a successfully computed plan: rate summary + facility plan table. Goal-independent,
 // called once per Calculate click (or facility/currency/module change), not on every goal
 // keystroke.
-function displayPlan(plan, scroll = true) {
+function displayPlan(plan) {
     const resultsSection = document.getElementById('results-section');
     const errorEl = document.getElementById('error-message');
     const resultsContent = document.getElementById('results-content');
@@ -3123,8 +3123,7 @@ function displayPlan(plan, scroll = true) {
     renderProfitBreakdown(plan);
     renderFacilityPlan(plan);
     renderAniimoSummary(plan);
-
-    if (scroll) resultsSection.scrollIntoView({ behavior: 'smooth' });
+    // The page stays where the player is; the results appear without scrolling to them.
 }
 
 // Render a time-to-goal result: Total Time / Amount Produced summary + Product Breakdown. Called
@@ -3214,7 +3213,7 @@ async function runFindPlan() {
         if (runId !== planRunId) return;
         finishSolveSteps();
         plansBySetup[bestSetup] = JSON.parse(bestJson);
-        showSelectedPlan(true);
+        showSelectedPlan();
 
         // The Minimum setup solves after Best is already on screen; switching to it before it's
         // done shows a short "still working" note until it arrives.
@@ -3224,7 +3223,7 @@ async function runFindPlan() {
                 if (runId !== planRunId) return;
                 setStep('minimum', 'done');
                 plansBySetup.minimum = JSON.parse(json);
-                if (selectedAniimoSetup() === 'minimum') showSelectedPlan(false);
+                if (selectedAniimoSetup() === 'minimum') showSelectedPlan();
             })
             .catch(error => {
                 if (runId !== planRunId) return;
