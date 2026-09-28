@@ -2336,6 +2336,7 @@ function priorityRows(plan) {
         label: priorityLabel(p.target, planContext?.aniipod),
         perSecond: p.per_second,
         items: p.items || [],
+        streams: p.streams || [],
         missing: missing[p.target] || null,
     }));
     if (!rows.some(r => r.target === 'coins')) {
@@ -2556,13 +2557,10 @@ async function runTimeToGoal() {
         }
         return;
     }
-    // Season points wait on each item's first batch, as coins do; anything else comes in at its
-    // steady rate. The breakdown covers that long.
+    // Anything else waits on each item's first batch too (see `madeBy`). The breakdown covers
+    // that long.
     const needed = Math.max(0, target - current);
-    const seconds = needed <= 0 ? 0
-        : chosen.perSecond <= 1e-12 ? null
-        : chosen.target === 'season_points' ? timeToPoints(needed)
-        : needed / chosen.perSecond;
+    const seconds = needed <= 0 ? 0 : chosen.perSecond <= 1e-12 ? null : timeToMake(chosen, needed);
     if (seconds === null) {
         lastGoalResult = null;
         document.getElementById('total-time').textContent = chosen.missing || 'Not made by this plan';
@@ -2582,38 +2580,40 @@ async function runTimeToGoal() {
     }
 }
 
-// Season points made in the first `seconds`: each item sold counts once its first batch is in
-// (see `production_over` in optimizer.rs, which does the same for coins).
-function pointsBy(seconds) {
-    return (lastPlan?.income_streams || [])
-        .reduce((sum, s) => sum + (s.points || 0) * s.units_per_second * Math.max(0, seconds - s.lead_time_seconds), 0);
+// How much of a rates row the plan has made after `seconds`: each item counts from its first batch
+// on (see `production_over` in optimizer.rs, which does the same for Home Coins). Season points
+// not ranked as a priority come from the income streams, which carry each item's points.
+function madeBy(row, seconds) {
+    const streams = row.streams?.length ? row.streams
+        : row.target === 'season_points'
+            ? (lastPlan?.income_streams || []).map(s => [(s.points || 0) * s.units_per_second, s.lead_time_seconds])
+            : [[row.perSecond, 0]];
+    return streams.reduce((sum, [rate, lead]) => sum + rate * Math.max(0, seconds - lead), 0);
 }
 
-// Seconds until the plan has made `needed` season points.
-function timeToPoints(needed) {
+// Seconds until the plan has made `needed` of a rates row, or null if it never does.
+function timeToMake(row, needed) {
     let lo = 0;
     let hi = 3600;
-    while (pointsBy(hi) < needed) {
+    while (madeBy(row, hi) < needed) {
         hi *= 2;
         if (hi > 1e10) return null;
     }
     for (let i = 0; i < 100; i++) {
         const mid = (lo + hi) / 2;
-        if (pointsBy(mid) >= needed) hi = mid; else lo = mid;
+        if (madeBy(row, mid) >= needed) hi = mid; else lo = mid;
     }
     return hi;
 }
 
-// What else the plan makes by the time the goal is met, e.g. "4.6M Home Coins, 39 Aniipod Mega".
-// Home Coins and season points count from each item's first batch, as the goal itself does.
+// What else the plan makes by the time the goal is met, e.g. "4.6M Home Coins, 39 Aniipod Mega",
+// each counted from its first batch as the goal itself is.
 function renderGoalAlso(rows, chosen, seconds, result) {
     const el = document.getElementById('goal-also');
-    const madeBy = r => r.target === 'coins' && result?.success ? result.amount_produced
-        : r.target === 'season_points' ? pointsBy(seconds)
-        : r.perSecond * seconds;
+    const made = r => r.target === 'coins' && result?.success ? result.amount_produced : madeBy(r, seconds);
     const also = seconds > 0
         ? rows.filter(r => r !== chosen && r.perSecond > 1e-12)
-            .map(r => `${formatNumber(Math.floor(madeBy(r)))} ${goalName(r)}`)
+            .map(r => `${formatNumber(Math.floor(made(r)))} ${goalName(r)}`)
         : [];
     el.style.display = also.length ? 'block' : 'none';
     el.innerHTML = also.length ? `<span>By then you'll also have:</span> <strong>${also.join(', ')}</strong>` : '';

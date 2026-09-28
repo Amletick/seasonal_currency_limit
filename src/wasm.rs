@@ -1151,6 +1151,10 @@ pub struct JsPriority {
     /// For a currency other than coins, the items that make it and how many of each per second,
     /// e.g. `[["growth_flower", 0.00093]]` behind Aniimo EXP.
     pub items: Vec<(String, f64)>,
+    /// `[per second, seconds until the first batch]` for everything making it (see
+    /// [`crate::exact::target_streams`]), so a goal counts each one's wait; empty for coins.
+    #[serde(default)]
+    pub streams: Vec<(f64, f64)>,
 }
 
 /// How long a level-up plan takes to cover the level-up's cost.
@@ -1443,6 +1447,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
             target: target.clone(),
             per_second: crate::exact::target_rate(&exact, &prepared.items, target),
             items: crate::exact::target_items(&exact, &prepared.items, target),
+            streams: crate::exact::target_streams(&exact, &prepared.items, target),
         })
         .collect();
     serde_json::to_string(&js).unwrap_or_default()

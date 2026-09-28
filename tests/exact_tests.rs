@@ -318,3 +318,20 @@ fn exact_season_points_are_a_priority() {
     // Floors leave 0.01% of slack for the solver's tolerances.
     assert!(kept >= most.rate_per_second * (1.0 - 1.01e-4), "kept {kept} of {} points a second", most.rate_per_second);
 }
+
+// A goal counts each item from its first batch, so what makes a priority is split by item with
+// its wait; the rates still add up to the priority's own rate, for a byproduct and for points.
+#[test]
+fn exact_target_streams_add_up_to_the_rate() {
+    let Some(items) = load_items_with_season() else { return };
+    let counts = FacilityCounts::only(&[("Farmland", 6, 2), ("Woodland", 4, 2), ("Jukebox Dryer", 1, 2)]);
+    let plan = solve_and_check(&items, &counts, &ModuleLevels::default());
+    for target in ["Wood Blocks", aniimax::models::SEASON_POINTS] {
+        let streams = aniimax::exact::target_streams(&plan, &items, target);
+        assert!(!streams.is_empty(), "nothing makes {target}");
+        let total: f64 = streams.iter().map(|(rate, _)| rate).sum();
+        let rate = aniimax::exact::target_rate(&plan, &items, target);
+        assert!((total - rate).abs() < 1e-12, "{target}: streams {total}, rate {rate}");
+        assert!(streams.iter().all(|&(_, lead)| lead > 0.0), "{target}: a stream with no wait");
+    }
+}

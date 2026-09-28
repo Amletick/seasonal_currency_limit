@@ -1157,6 +1157,37 @@ pub fn target_items(exact: &ExactPlan, items: &[ProductionItem], target: &str) -
         .collect()
 }
 
+/// Where a priority `target` other than coins comes from, as `(per second, seconds until the
+/// first batch)` for each item sold for it or each recipe making it as a byproduct, so a goal can
+/// count the wait before each one starts. The rates add up to [`target_rate`]. Empty for coins,
+/// whose goals go by the plan's income streams instead.
+pub fn target_streams(exact: &ExactPlan, items: &[ProductionItem], target: &str) -> Vec<(f64, f64)> {
+    if target == "coins" {
+        return Vec::new();
+    }
+    let all: HashMap<&str, &ProductionItem> = items.iter().map(|i| (i.name.as_str(), i)).collect();
+    let lead = |name: &str| crate::optimizer::item_lead_time(name, &all, 0);
+    let byproduct: Vec<(f64, f64)> = exact
+        .recipe_rates
+        .iter()
+        .filter_map(|(name, rate)| match &all.get(name.as_str())?.byproduct {
+            Some((resource, amount)) if resource == target => Some((rate * *amount as f64, lead(name))),
+            _ => None,
+        })
+        .collect();
+    if !byproduct.is_empty() {
+        return byproduct;
+    }
+    exact
+        .sold
+        .iter()
+        .filter_map(|(name, &sold)| {
+            let earns = all.get(name.as_str())?.earns(target);
+            (earns > 0.0 && sold > 0.0).then(|| (sold * earns, lead(name)))
+        })
+        .collect()
+}
+
 /// What `exact` makes per second of a priority `target`: coins (net of seed costs), another
 /// currency ("aniimo_exp", "aniipods"), or a byproduct ("Wood Blocks", "Mineral Sand").
 pub fn target_rate(exact: &ExactPlan, items: &[ProductionItem], target: &str) -> f64 {
