@@ -667,6 +667,14 @@ function improvementCandidates(base, setup) {
             input: { ...base, exclude: base.exclude.filter(name => name !== recipe.name) },
         });
     }
+    // Recipes the player skipped: they may have a reason, but they should know what it costs.
+    for (const name of [...skipped].sort((a, b) => prettyItem(a).localeCompare(prettyItem(b)))) {
+        if (!base.exclude.includes(name)) continue;
+        candidates.push({
+            label: `Stop skipping ${prettyItem(name)}`,
+            input: { ...base, exclude: base.exclude.filter(n => n !== name) },
+        });
+    }
 
     // An Aniimo a level higher, up to the highest level the game is known to have.
     if (setup.startsWith('best')) {
