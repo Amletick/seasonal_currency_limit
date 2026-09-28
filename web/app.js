@@ -117,7 +117,11 @@ let planRunId = 0;
 
 function selectedAniimoSetup() {
     if (document.getElementById('aniimo-minimum').checked) return 'minimum';
-    return bestAniimoLevel() === MAX_ANIIMO_LEVEL ? 'best' : 'best3';
+    // The levels themselves travel in `aniimo_levels`; this only has to tell one Best from
+    // another so each is worked out and kept separately.
+    const levelled = levelledAbilities().filter(a => maxLevelFor(a) >= MAX_ANIIMO_LEVEL);
+    const below = levelled.filter(a => bestAniimoLevel(a) < MAX_ANIIMO_LEVEL).sort();
+    return below.length === 0 ? 'best' : `best:${below.join(',')}`;
 }
 
 // What the last plan was solved from, so switching setup can work out another one without the
@@ -129,7 +133,9 @@ let lastPlanInput = null;
 function ensurePlanFor(setup) {
     if (plansBySetup[setup] || !lastPlanInput) return;
     const runId = planRunId;
-    callWorker('find_plan', JSON.stringify({ ...lastPlanInput, aniimo: setup }))
+    // The levels are read afresh: the player may have changed which abilities they have since
+    // the plan this input came from.
+    callWorker('find_plan', JSON.stringify({ ...lastPlanInput, aniimo: setup, aniimo_levels: { ...aniimoLevels } }))
         .then(json => {
             if (runId !== planRunId) return;
             plansBySetup[setup] = JSON.parse(json);
@@ -323,7 +329,7 @@ function getPersistedFieldIds() {
         'mode-simple', 'mode-advanced', 'home-level',
         'ecological-module-level', 'kitchen-module-level',
         'resource-detector-level', 'crafting-module-level',
-        'rate-unit', 'has-level-four'
+        'rate-unit'
     ];
 }
 
@@ -378,7 +384,7 @@ function initFacilityTiers(data) {
 }
 
 function saveInputsToStorage() {
-    const data = { facilityTiers, levelUpStock, skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder };
+    const data = { facilityTiers, levelUpStock, skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder, aniimoLevels };
     getPersistedFieldIds().forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
@@ -407,6 +413,7 @@ function loadInputsFromStorage(data) {
             .map(target => ({ target, on: target === first }));
         data['strategy-priorities'] = true;
     }
+    if (data.aniimoLevels && typeof data.aniimoLevels === 'object') aniimoLevels = { ...data.aniimoLevels };
     getPersistedFieldIds().forEach(id => {
         if (!(id in data)) return;
         const el = document.getElementById(id);
@@ -685,10 +692,45 @@ const MAX_ANIIMO_LEVEL = 4;
 const ABILITY_CEILINGS = { Perfumery: 3 };
 const maxLevelFor = ability => ABILITY_CEILINGS[ability] ?? MAX_ANIIMO_LEVEL;
 
-// The best ability level to plan for. Level-4 Aniimo take some getting, so a player who hasn't
-// got one plans for level 3 instead (see `aniimo_setup_from` in wasm.rs for the names).
-function bestAniimoLevel() {
-    return document.getElementById('has-level-four')?.checked === false ? 3 : MAX_ANIIMO_LEVEL;
+// Which abilities a level matters for: the ones a facility works with, since a crop's grow time
+// is fixed and an environment building's Aniimo level isn't known to change anything. Largest
+// first so the list reads in the game's ability order.
+function levelledAbilities() {
+    const used = new Set(FACILITIES.map(f => f.ability).filter(Boolean));
+    return ABILITIES.map(a => a.name).filter(name => used.has(name));
+}
+
+// The ability levels the player says they have, for the plan input. An ability left out is taken
+// as level 4; the game's own ceiling applies on top (see `max_level_for` in models.rs).
+let aniimoLevels = {};
+
+function bestAniimoLevel(ability) {
+    const asked = aniimoLevels[ability] ?? MAX_ANIIMO_LEVEL;
+    return Math.min(asked, maxLevelFor(ability));
+}
+
+// True when every ability the player could have at level 4 is at level 4.
+function hasEveryLevelFour() {
+    return levelledAbilities().every(a => bestAniimoLevel(a) >= maxLevelFor(a));
+}
+
+// One tick per ability, with the ones the game caps below 4 shown as fixed.
+function renderAniimoLevels() {
+    const list = document.getElementById('level-four-list');
+    if (!list) return;
+    list.innerHTML = levelledAbilities().map(ability => {
+        const ceiling = maxLevelFor(ability);
+        if (ceiling < MAX_ANIIMO_LEVEL) {
+            return `<label class="fixed" title="The game has no level-${MAX_ANIIMO_LEVEL} ${ability} Aniimo yet">
+                <input type="checkbox" disabled> ${abilityTag(ability)} <span class="hint small">stops at ${ceiling}</span></label>`;
+        }
+        const on = bestAniimoLevel(ability) >= MAX_ANIIMO_LEVEL;
+        return `<label><input type="checkbox" data-ability="${ability}"${on ? ' checked' : ''}> ${abilityTag(ability)}</label>`;
+    }).join('');
+    const levelled = levelledAbilities().filter(a => maxLevelFor(a) >= MAX_ANIIMO_LEVEL);
+    const have = levelled.filter(a => bestAniimoLevel(a) >= MAX_ANIIMO_LEVEL).length;
+    const summary = document.getElementById('level-four-summary');
+    if (summary) summary.textContent = have === levelled.length ? 'all' : have === 0 ? 'none' : `${have} of ${levelled.length}`;
 }
 
 const ITEM_NAMES = {
@@ -2295,6 +2337,7 @@ async function runFindPlan() {
         // Only the backup planner reports progress (see worker.js); the exact planner is quick.
         // Whichever Best the player has asked for; the other one waits until they switch to it.
         const bestSetup = selectedAniimoSetup() === 'minimum' ? 'best' : selectedAniimoSetup();
+        input.aniimo_levels = { ...aniimoLevels };
         const bestJson = await callWorker('find_plan', JSON.stringify({ ...input, aniimo: bestSetup }), (count) => {
             progressFill.classList.remove('indeterminate');
             progressFill.style.width = `${trialCountToPercent(count)}%`;
@@ -2455,7 +2498,7 @@ function formatRecipeAniimo(recipe, facility) {
             `<span class="job"><span class="job-step">${step}${times > 1 ? ` &times;${times}` : ''}</span> ${abilityTag(ability)}${level > 1 ? ` Lv.${level}+` : ''}</span>`).join('')}</span>`;
     }
     const [ability, minLevel] = recipe.aniimo;
-    const best = `best Lv.${Math.min(bestAniimoLevel(), maxLevelFor(ability))}${facility.personality ? ' ' + facility.personality : ''}`;
+    const best = `best Lv.${bestAniimoLevel(ability)}${facility.personality ? ' ' + facility.personality : ''}`;
     return `<span>${abilityTag(ability)} Lv.${minLevel}+<span class="recipe-best">${best}</span></span>`;
 }
 
@@ -2586,6 +2629,7 @@ document.addEventListener('DOMContentLoaded', () => {
     attachSpecialHandlers();
     renderSpecialRecipes();
     attachPriorityHandlers();
+    renderAniimoLevels();
     applyConfigMode();
     initWasm();
 
@@ -2603,7 +2647,14 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('aniimo-body').hidden = !expanded;
     });
     document.getElementById('aniimo-minimum').addEventListener('change', () => switchAniimoSetup());
-    document.getElementById('has-level-four').addEventListener('change', () => switchAniimoSetup());
+    document.getElementById('level-four-list').addEventListener('change', event => {
+        const ability = event.target.dataset?.ability;
+        if (!ability) return;
+        aniimoLevels[ability] = event.target.checked ? MAX_ANIIMO_LEVEL : MAX_ANIIMO_LEVEL - 1;
+        saveInputsToStorage();
+        renderAniimoLevels();
+        switchAniimoSetup();
+    });
 
     // Goal fields update live; no need to re-run the facility-allocation solve just because the
     // goal amount changed.

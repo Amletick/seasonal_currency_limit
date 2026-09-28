@@ -169,7 +169,10 @@
                                     <label title="The best Aniimo you have, with each facility's personality"><input type="radio" name="aniimo-setup" id="aniimo-best" value="best" checked> Best</label>
                                     <label title="The lowest ability level each recipe accepts: the least you can get by with"><input type="radio" name="aniimo-setup" id="aniimo-minimum" value="minimum"> Minimum</label>
                                 </div>
-                                <label class="aniimo-cap" title="Level 4 takes some getting; untick and Best plans for level 3"><input type="checkbox" id="has-level-four" checked> I have level 4</label>
+                                <details class="aniimo-levels">
+                                    <summary title="Aniimo level up by ability, so tick the ones you have at level 4">Level 4: <span id="level-four-summary">all</span></summary>
+                                    <div class="level-four-list" id="level-four-list"></div>
+                                </details>
                             </div>
                         </div>
                         <p class="collapsed-summary" id="aniimo-collapsed-summary"></p>
@@ -178,7 +181,7 @@
                         <div id="aniimo-body" hidden>
                             <details class="explain">
                                 <summary>How the team is worked out</summary>
-                                <p><strong>Best</strong> puts the best Aniimo you said you have, level 4 or level 3, with the facility's personality on every job. <strong>Minimum</strong> uses the lowest ability level each recipe accepts, with no personality bonus: slower, but it's what you need at the very least. An Aniimo is fastest on recipes below its level: a level-4 one works a processor's level-1 recipe at 500% and a level-2 one at 400%, but a Well's level-1 recipe at 250%. The plan below follows whichever is picked.</p>
+                                <p><strong>Best</strong> puts the best Aniimo you said you have on every job, with the facility's personality. Aniimo level up by ability, so tick the abilities you have at level 4 beside the tabs above; an ability left unticked is planned at level 3. <strong>Minimum</strong> uses the lowest ability level each recipe accepts, with no personality bonus: slower, but it's what you need at the very least. An Aniimo is fastest on recipes below its level: a level-4 one works a processor's level-1 recipe at 500% and a level-2 one at 400%, but a Well's level-1 recipe at 250%. The plan below follows whichever is picked.</p>
                                 <p>Each Aniimo takes on as much as it can: any job needing its ability at or below its level, for as many hours as it has, so long as no two of those facilities want opposite personalities. Work that takes any level, like the Farmland and Woodland jobs, fills whatever time is left over. Facilities with a resident Aniimo (Sandcastle, Dewy House and the like) need one each, and so does each Heat Furnace (Fire), Cooling Unit (Ice) and Sunlamp (Light) in use. An Aniimo carries four personalities at once, one from each opposed pair, shown as letters over its portrait: Instinctive or Energetic (I/E), Nimble or Practical (N/S), Faithful or Tenacious (F/T), Playful or Judicious (P/J). So one can hold the bonus at up to four facilities, never at two wanting opposites, and only while it has hours to spare. The team below is the best combination that allows, and each Aniimo lists every personality it has to have. Whether an environment building's Aniimo level or personality matters isn't known yet. Each recipe's minimum ability level and the Farmland/Woodland jobs haven't been checked in game yet.</p>
                             </details>
                             <div id="aniimo-summary"></div>

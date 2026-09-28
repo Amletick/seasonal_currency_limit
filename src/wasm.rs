@@ -694,6 +694,13 @@ pub struct JsPlanInput {
     /// `workers`, and report which Aniimo each row needs (see [`JsPlanStep::aniimo`]).
     #[serde(default)]
     pub aniimo: Option<String>,
+    /// With `"best"`, the ability level the player has of each ability, e.g. `{"Earth": 4,
+    /// "Leisure": 3}`. Aniimo level up by ability, so a player can have a level-4 one for the
+    /// Mine and only a level-3 one for the Starfall Hammock. Anything left out falls back to
+    /// [`crate::models::MAX_ANIIMO_LEVEL`], and the game's own ceiling applies either way (see
+    /// [`crate::models::max_level_for`]).
+    #[serde(default)]
+    pub aniimo_levels: std::collections::HashMap<String, u32>,
     /// See `crate::optimizer::find_production_plan`'s doc comment on `prioritize_byproducts`;
     /// defaults to `true` (checked by default in the UI) since Wood Blocks/Mineral Sand can be a
     /// real in-game constraint players can't just buy their way around.
@@ -795,7 +802,7 @@ fn embedded_grower_steps() -> crate::models::GrowerSteps {
 /// accept any level, so they're counted at their minimum level under either setup.
 fn aniimo_tasks_for(
     step: &crate::models::PlanStep,
-    setup: crate::models::AniimoSetup,
+    setup: &crate::models::AniimoSetup,
     requirements: &crate::models::AniimoRequirements,
     grower_steps: &crate::models::GrowerSteps,
 ) -> Vec<JsAniimoTask> {
@@ -859,12 +866,23 @@ fn embedded_aniimo_requirements() -> crate::models::AniimoRequirements {
         .expect("embedded aniimo_requirements.csv is valid")
 }
 
-fn aniimo_setup_from(name: &str) -> Option<crate::models::AniimoSetup> {
+fn aniimo_setup_from(
+    name: &str,
+    levels: &std::collections::HashMap<String, u32>,
+) -> Option<crate::models::AniimoSetup> {
+    // The web app tacks the abilities it is planning below level 4 onto the name, so each Best
+    // gets worked out and kept apart; the levels themselves arrive in `aniimo_levels`.
+    let name = name.split(':').next().unwrap_or(name);
     match name {
         "minimum" => Some(crate::models::AniimoSetup::Minimum),
-        // "best" plans for the top ability level; "best3" for a player without level-4 Aniimo.
-        "best" => Some(crate::models::AniimoSetup::Best(crate::models::MAX_ANIIMO_LEVEL)),
-        "best3" => Some(crate::models::AniimoSetup::Best(3)),
+        // "best" plans for the levels the player says they have, the top level where they
+        // haven't said; "best3" holds everything to level 3.
+        "best" | "best3" => {
+            let default = if name == "best3" { 3 } else { crate::models::MAX_ANIIMO_LEVEL };
+            let mut wanted = crate::models::AniimoLevels::all(default);
+            wanted.by_ability = levels.iter().map(|(a, l)| (a.clone(), *l)).collect();
+            Some(crate::models::AniimoSetup::Best(wanted))
+        }
         _ => None,
     }
 }
@@ -1484,9 +1502,9 @@ impl PreparedInput {
         };
         let mut items = get_embedded_items();
         items.retain(|item| !input.exclude.iter().any(|name| name == crate::models::base_item_name(&item.name)));
-        let setup = input.aniimo.as_deref().and_then(aniimo_setup_from);
+        let setup = input.aniimo.as_deref().and_then(|name| aniimo_setup_from(name, &input.aniimo_levels));
         let requirements = embedded_aniimo_requirements();
-        match setup {
+        match &setup {
             Some(setup) => requirements.apply(setup, &mut items),
             None => workers_from(&input.workers).apply(&requirements, &mut items),
         }
@@ -1515,7 +1533,7 @@ impl PreparedInput {
             .coin_items
             .into_iter()
             .map(|step| {
-                let aniimo = match (self.setup, &step.item_name) {
+                let aniimo = match (&self.setup, &step.item_name) {
                     (Some(setup), Some(item)) if step.status == crate::models::PlanStepStatus::Producing => {
                         self.requirements.get(item).map(|(ability, _)| {
                             let worker = self.requirements.worker_for_at(item, &step.facility, setup);
@@ -1530,6 +1548,7 @@ impl PreparedInput {
                 };
                 let aniimo_tasks = self
                     .setup
+                    .as_ref()
                     .map(|setup| aniimo_tasks_for(&step, setup, &self.requirements, &self.grower_steps))
                     .unwrap_or_default();
                 JsPlanStep { aniimo, aniimo_tasks, ..step.into() }

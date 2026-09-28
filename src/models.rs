@@ -405,32 +405,68 @@ impl Workers {
     }
 }
 
+/// The ability levels a plan may assume. Aniimo level up by ability, so a player can have a
+/// level-4 Earth one for the Mine and only a level-3 Leisure one for the Starfall Hammock; the
+/// level asked for is per ability, and capped by whatever the game itself allows (see
+/// [`max_level_for`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AniimoLevels {
+    /// What to assume for an ability the player hasn't spoken for.
+    pub default: u32,
+    /// The levels the player has said they have.
+    pub by_ability: std::collections::BTreeMap<String, u32>,
+}
+
+impl AniimoLevels {
+    /// Every ability at `level`, as far as the game allows.
+    pub fn all(level: u32) -> Self {
+        AniimoLevels { default: level, by_ability: Default::default() }
+    }
+
+    /// The level to plan for at `ability`.
+    ///
+    /// ```
+    /// use aniimax::models::AniimoLevels;
+    ///
+    /// let mut levels = AniimoLevels::all(4);
+    /// levels.by_ability.insert("Leisure".to_string(), 3);
+    /// assert_eq!(levels.level_for("Earth"), 4);
+    /// assert_eq!(levels.level_for("Leisure"), 3);
+    /// // No level-4 Perfumery Aniimo exists, whatever a player says.
+    /// assert_eq!(levels.level_for("Perfumery"), 3);
+    /// ```
+    pub fn level_for(&self, ability: &str) -> u32 {
+        let asked = self.by_ability.get(ability).copied().unwrap_or(self.default);
+        asked.min(max_level_for(ability)).max(1)
+    }
+}
+
 /// Which Aniimo a plan assumes on every workload-based facility, when the player hasn't said
 /// which Aniimo they have. The calculator plans both and lets the player pick.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AniimoSetup {
     /// Each recipe worked by an Aniimo at exactly the ability level it requires, without the
     /// personality bonus: the least a player needs to run the plan at all.
     Minimum,
-    /// An Aniimo at this ability level with the facility's personality bonus everywhere: the
-    /// fastest setup a player with Aniimo that good can have. At [`MAX_ANIIMO_LEVEL`] that's 600%
-    /// on a processor's level-1 recipe and 480% on a level-2 one, or 300% and 216% at a gathering
-    /// facility; a level lower, 480% and 360%, or 240% and 168% (see [`efficiency`]). Level-4
-    /// Aniimo are hard to come by, so a player can plan for level 3 instead.
-    Best(u32),
+    /// The best Aniimo the player says they have on every job, with the facility's personality
+    /// bonus. At level 4 that's 600% on a processor's level-1 recipe and 480% on a level-2 one,
+    /// or 300% and 216% at a gathering facility; a level lower, 480% and 360%, or 240% and 168%
+    /// (see [`efficiency`]). Level-4 Aniimo are hard to come by, and by ability, so the levels
+    /// are given per ability.
+    Best(AniimoLevels),
 }
 
 /// The Aniimo ability and minimum ability level each workload-based recipe needs (see
 /// `data/aniimo_requirements.csv`). Crops and trees aren't listed; their grow time is fixed.
 ///
 /// ```
-/// use aniimax::models::{AniimoRequirements, AniimoSetup};
+/// use aniimax::models::{AniimoLevels, AniimoRequirements, AniimoSetup};
 ///
 /// let mut reqs = AniimoRequirements::default();
 /// reqs.insert("lavender_powder", "Wind", 2);
 /// assert_eq!(reqs.get("lavender_powder"), Some(("Wind", 2)));
-/// assert_eq!(reqs.worker_for("lavender_powder", AniimoSetup::Minimum).suitability, 2);
-/// assert_eq!(reqs.worker_for("lavender_powder", AniimoSetup::Best(4)).suitability, 4);
+/// assert_eq!(reqs.worker_for("lavender_powder", &AniimoSetup::Minimum).suitability, 2);
+/// assert_eq!(reqs.worker_for("lavender_powder", &AniimoSetup::Best(AniimoLevels::all(4))).suitability, 4);
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct AniimoRequirements {
@@ -451,18 +487,17 @@ impl AniimoRequirements {
     /// The Aniimo `setup` puts on `item`. An item without a listed requirement gets a level-1
     /// Aniimo under [`AniimoSetup::Minimum`]. Assumes the facility has a personality bonus; see
     /// [`AniimoRequirements::worker_for_at`] for one that may not.
-    pub fn worker_for(&self, item: &str, setup: AniimoSetup) -> Worker {
+    pub fn worker_for(&self, item: &str, setup: &AniimoSetup) -> Worker {
         self.worker_for_at(item, "", setup)
     }
 
     /// The Aniimo `setup` puts on `item` at `facility`, which decides whether the Best setup gets
     /// a personality bonus (see [`has_personality_bonus`]).
-    pub fn worker_for_at(&self, item: &str, facility: &str, setup: AniimoSetup) -> Worker {
+    pub fn worker_for_at(&self, item: &str, facility: &str, setup: &AniimoSetup) -> Worker {
         match setup {
-            // An ability that stops below the level asked for caps the worker there.
-            AniimoSetup::Best(level) => {
-                let ceiling = self.get(item).map_or(MAX_ANIIMO_LEVEL, |(ability, _)| max_level_for(ability));
-                Worker::new(level.min(ceiling), has_personality_bonus(facility))
+            AniimoSetup::Best(levels) => {
+                let ability = self.get(item).map_or("", |(ability, _)| ability);
+                Worker::new(levels.level_for(ability), has_personality_bonus(facility))
             }
             AniimoSetup::Minimum => Worker::new(self.get(item).map_or(1, |(_, level)| level), false),
         }
@@ -470,7 +505,7 @@ impl AniimoRequirements {
 
     /// Recomputes every workload-based item's `production_time` for the Aniimo `setup` puts on
     /// it. Crops and trees keep their fixed grow time.
-    pub fn apply(&self, setup: AniimoSetup, items: &mut [ProductionItem]) {
+    pub fn apply(&self, setup: &AniimoSetup, items: &mut [ProductionItem]) {
         for item in items.iter_mut() {
             if let Some(workload) = item.workload {
                 let required = self.get(&item.name).map_or(1, |(_, level)| level);

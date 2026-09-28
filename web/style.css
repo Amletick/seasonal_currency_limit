@@ -2300,3 +2300,46 @@ tr:hover .skip-row,
     white-space: nowrap;
     cursor: pointer;
 }
+
+/* Which abilities the player has at level 4, beside the Best and Minimum tabs. */
+.aniimo-levels {
+    font-size: 0.82rem;
+    color: var(--text-muted, #9aa0a8);
+}
+
+.aniimo-levels > summary {
+    cursor: pointer;
+    white-space: nowrap;
+    list-style: none;
+}
+
+.aniimo-levels > summary::-webkit-details-marker {
+    display: none;
+}
+
+.aniimo-levels > summary::after {
+    content: ' \25be';
+}
+
+.aniimo-levels[open] > summary::after {
+    content: ' \25b4';
+}
+
+.level-four-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem 0.9rem;
+    padding: 0.5rem 0 0.1rem;
+}
+
+.level-four-list label {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    cursor: pointer;
+}
+
+.level-four-list label.fixed {
+    opacity: 0.6;
+    cursor: default;
+}
