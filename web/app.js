@@ -602,7 +602,7 @@ function renderSeason() {
     document.getElementById('season-notes').innerHTML = SEASON.recipeNotes.map(r => `
         <label class="special-option">
             <input type="checkbox" data-special="${r.name}"${unlockedSpecial.has(r.name) ? ' checked' : ''}>
-            <span>${prettyItem(r.name)} <span class="hint small">${r.cost} wheat</span></span>
+            <span>${prettyItem(r.name)}</span>
         </label>`).join('');
 }
 

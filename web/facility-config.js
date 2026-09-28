@@ -205,12 +205,13 @@ export const SEASON = {
     seedCost: 4,
     // Crops whose seeds cost Moonray Wheat rather than coins.
     crops: ['moondew_radish', 'waxing_moon_pepper'],
-    // Recipe Notes unlock these with Moonray Wheat; the season's other recipes come unlocked.
+    // Recipes unlocked with Recipe Notes; plans only use the ones the player ticks. The season's
+    // other recipes come unlocked.
     recipeNotes: [
-        { name: 'harvest_platter', cost: 120 },
-        { name: 'umbral_pickle', cost: 80 },
-        { name: 'umbral_hot_pot', cost: 80 },
-        { name: 'umbral_sweet_and_spicy_sauce', cost: 80 },
+        { name: 'harvest_platter' },
+        { name: 'umbral_pickle' },
+        { name: 'umbral_hot_pot' },
+        { name: 'umbral_sweet_and_spicy_sauce' },
     ],
 };
 
