@@ -1018,7 +1018,8 @@ function homelandPieces(plan, input) {
             unplaced.add(f.name);
             return;
         }
-        for (let i = 0; i < extra; i++) pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: 0, facility: f.name, crop: null }] });
+        const building = f.name in ENVIRONMENT_BUILDING_SIZES;
+        for (let i = 0; i < extra; i++) pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: 0, facility: f.name, crop: null, building, mode: null }] });
     });
     return { pieces, unplaced: [...unplaced] };
 }
@@ -1077,7 +1078,12 @@ function renderHomelandLayout(plan) {
 }
 
 function homelandSvg(layout) {
-    const rects = [layout.storage, ...layout.pieces.flatMap(p => p.members)];
+    // Each environment building in use covers the 9x9 square around its center, drawn under
+    // everything in its mode's color as on the building's own map.
+    const coverage = layout.pieces.flatMap(p => p.members)
+        .filter(m => m.building && m.mode)
+        .map(m => ({ x: m.x + m.w / 2 - ENVIRONMENT_COVERAGE_RADIUS, y: m.y + m.h / 2 - ENVIRONMENT_COVERAGE_RADIUS, w: ENVIRONMENT_COVERAGE_RADIUS * 2, h: ENVIRONMENT_COVERAGE_RADIUS * 2, mode: m.mode }));
+    const rects = [layout.storage, ...layout.pieces.flatMap(p => p.members), ...coverage];
     const minX = Math.floor(Math.min(...rects.map(r => r.x))) - 1;
     const minY = Math.floor(Math.min(...rects.map(r => r.y))) - 1;
     const maxX = Math.ceil(Math.max(...rects.map(r => r.x + r.w))) + 1;
@@ -1088,17 +1094,36 @@ function homelandSvg(layout) {
     const maxTrips = Math.max(...layout.pieces.flatMap(p => p.members.map(m => m.weight)), 1e-9);
     const shapes = layout.pieces.flatMap(p => p.members).map(m => {
         const color = layoutColor(m);
-        const tip = `${m.facility}${m.crop ? `: ${prettyItem(m.crop)}` : m.building ? ` (${m.mode})` : ' (idle)'}${m.weight > 0 ? `, ${formatRate(m.weight)} trips/hour, ${Math.hypot(m.x + m.w / 2, m.y + m.h / 2).toFixed(1)} tiles away` : ''}`;
+        const tip = `${m.facility}${m.crop ? `: ${prettyItem(m.crop)}` : m.building && m.mode ? ` (${m.mode})` : ' (idle)'}${m.weight > 0 ? `, ${formatRate(m.weight)} trips/hour, ${Math.hypot(m.x + m.w / 2, m.y + m.h / 2).toFixed(1)} tiles away` : ''}`;
         const label = Math.min(m.w, m.h) >= 1.5 ? `<text x="${m.x + m.w / 2}" y="${m.y + m.h / 2}" font-size="${Math.min(0.8, m.w / 3)}">${initialsOf(m.facility)}</text>` : '';
         // Busier pieces are filled more solidly; idle ones are an outline.
         const fill = m.building ? 0.9 : m.weight > 0 ? 0.35 + 0.55 * Math.sqrt(m.weight / maxTrips) : 0.08;
+        if (m.building) {
+            // As on the building's own map: its mode's color, with the game's symbol for it.
+            return `<g class="env-building"><title>${tip}</title><rect x="${m.x + 0.05}" y="${m.y + 0.05}" width="${m.w - 0.1}" height="${m.h - 0.1}" rx="0.3"
+                fill="${color}" fill-opacity="${m.mode ? 1 : 0.25}" stroke="currentColor" stroke-opacity="0.6" stroke-width="0.08" />
+                ${m.mode ? environmentBuildingIcon(m.facility, m.mode, m.x + m.w / 2, m.y + m.h / 2) : ''}</g>`;
+        }
         return `<g><title>${tip}</title><rect x="${m.x + 0.04}" y="${m.y + 0.04}" width="${m.w - 0.08}" height="${m.h - 0.08}" rx="0.2"
             fill="${color}" fill-opacity="${fill.toFixed(2)}" stroke="${color}" stroke-width="0.06" />${label}</g>`;
+    }).join('');
+    const coverageShapes = coverage.map(c => {
+        const tint = ENVIRONMENT_MODE_COLORS[c.mode] || '#9aa0a8';
+        const shade = (0.12 * (ENVIRONMENT_MODE_SHADE[c.mode] ?? 1)).toFixed(3);
+        return `<rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" fill="${tint}" fill-opacity="${shade}" />`;
+    }).join('');
+    // Its edge goes over the pieces, so the square reads through whatever stands in it.
+    const coverageEdges = coverage.map(c => {
+        const tint = ENVIRONMENT_MODE_COLORS[c.mode] || '#9aa0a8';
+        return `<rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" fill="none"
+            stroke="${tint}" stroke-opacity="0.8" stroke-dasharray="0.35,0.25" stroke-width="0.08" />`;
     }).join('');
     const s = layout.storage;
     return `<svg class="layout-svg" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}" role="img" aria-label="Homeland layout">
         <g class="env-grid">${lines.join('')}</g>
+        <g class="layout-coverage">${coverageShapes}</g>
         ${shapes}
+        <g class="layout-coverage-edges" pointer-events="none">${coverageEdges}</g>
         <g><title>Storage Unit</title><rect x="${s.x + 0.04}" y="${s.y + 0.04}" width="${s.w - 0.08}" height="${s.h - 0.08}" rx="0.2" class="layout-storage" />
         <text x="0" y="0" font-size="0.8" class="layout-storage-text">SU</text></g>
     </svg>`;
