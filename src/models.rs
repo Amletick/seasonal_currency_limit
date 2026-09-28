@@ -750,8 +750,9 @@ pub struct PlanStep {
     /// re-dedicated). NOT the same thing as "needs a seed": only Farmland and Woodland are
     /// actually planted; see `SeedRequirement`'s doc comment.
     pub is_grower: bool,
-    /// Seconds for one full production cycle of `item_name` at this facility. `None` for
-    /// Idle/NothingAvailable/NotNeeded rows, since nothing is cycling there.
+    /// Seconds for one full production cycle of `item_name` at this facility: a crop's grow time,
+    /// or one batch at a processor. `None` for Idle/NothingAvailable/NotNeeded rows, since nothing
+    /// is cycling there.
     pub cycle_time: Option<f64>,
     /// The growing environment this row's item needs ("Cool"/"Warm"/"Freeze"/"Scorching"/
     /// "Adequate"), if any; lets the frontend group Farmland/Woodland rows by which environment

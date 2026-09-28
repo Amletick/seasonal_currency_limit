@@ -1384,7 +1384,7 @@ pub fn to_production_plan(
                 status: PlanStepStatus::Producing,
                 reason,
                 is_grower: grower,
-                cycle_time: grower.then_some(recipe.production_time),
+                cycle_time: Some(recipe.production_time),
                 environment: if grower { recipe.environment.clone() } else { None },
                 busy_units: (!grower).then(|| (rate * recipe.production_time).min(units as f64)),
             });

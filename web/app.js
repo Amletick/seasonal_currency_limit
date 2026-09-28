@@ -933,6 +933,10 @@ function tripsPerUnit(step) {
     return (busy / step.cycle_time / step.facility_count) * 3600;
 }
 
+// Facilities whose crops a growing environment changes (`ENVIRONMENT_GATED_FACILITIES` in
+// coverage.rs).
+const COVERAGE_SENSITIVE = new Set(['Farmland', 'Woodland', 'Dewy House', 'Starfall Hammock', 'Tidewhisper Sandcastle', 'Floral Windmill']);
+
 // The plan as pieces for `layOut`: environment blocks, then one piece per other facility unit,
 // then whatever the player owns that the plan doesn't use.
 function homelandPieces(plan, input) {
@@ -954,36 +958,40 @@ function homelandPieces(plan, input) {
     units.forEach(({ mode, unit }, i) => {
         const key = unit.partner ? `${unit.building}|${unit.partner.join(',')}|${i}` : `#${i}`;
         // A pair's zones are one place: gather them under the first zone that names the pair.
-        const pairKey = unit.partner ? [...blocks.keys()].find(k => k.startsWith(`${unit.building}|${unit.partner.join(',')}|`) && !blocks.get(k).zones.includes(unit.zone)) : null;
-        const block = blocks.get(pairKey) || { mode, unit, layouts: [], rows: [], zones: [] };
-        block.layouts.push(...unit.layout);
-        block.rows.push(...unit.rows);
-        block.zones.push(unit.zone);
+        const pairKey = unit.partner ? [...blocks.keys()].find(k => k.startsWith(`${unit.building}|${unit.partner.join(',')}|`) && !blocks.get(k).parts.some(part => part.zone === unit.zone)) : null;
+        const block = blocks.get(pairKey) || { mode, unit, parts: [] };
+        block.parts.push({ zone: unit.zone ?? 0, layout: unit.layout, rows: unit.rows });
         blocks.set(pairKey || key, block);
     });
     const placedInBlocks = {};
-    blocks.forEach(({ mode, unit, layouts, rows }) => {
+    // Each is a cluster for `layOut`: its buildings, and the plots they cover, which may go
+    // anywhere in their zone.
+    blocks.forEach(({ mode, unit, parts }) => {
         const size = environmentBuildingSize(unit.building);
-        const members = [{ x: 0, y: 0, w: size, h: size, weight: 0, facility: unit.building, mode: unit.pairModes ? unit.pairModes[0] : mode, building: true }];
+        const buildings = [{ x: 0, y: 0, w: size, h: size, facility: unit.building, mode: unit.pairModes ? unit.pairModes[0] : mode, building: true }];
         count(unit.building);
         if (unit.partner) {
             const partnerSize = environmentBuildingSize(unit.partner[0]);
-            members.push({ x: unit.partner[1], y: unit.partner[2], w: partnerSize, h: partnerSize, weight: 0, facility: unit.partner[0], mode: unit.pairModes ? unit.pairModes[1] : mode, building: true });
+            buildings.push({ x: unit.partner[1], y: unit.partner[2], w: partnerSize, h: partnerSize, facility: unit.partner[0], mode: unit.pairModes ? unit.pairModes[1] : mode, building: true });
             count(unit.partner[0]);
         }
-        // Each plot gets one of the crops planned for its facility here, busiest first.
-        const crops = {};
-        rows.forEach(r => {
-            for (let n = 0; n < r.facility_count; n++) (crops[r.facility] ||= []).push({ crop: r.item_name, trips: tripsPerUnit(r) });
+        const plots = [];
+        const planned = [];
+        parts.forEach(({ zone, layout, rows }) => {
+            // Each plot in this zone gets one of the crops planned for its facility here.
+            const crops = {};
+            rows.forEach(r => {
+                for (let n = 0; n < r.facility_count; n++) (crops[r.facility] ||= []).push({ crop: r.item_name, trips: tripsPerUnit(r) });
+            });
+            layout.forEach(p => {
+                const crop = (crops[p.facility] || []).shift() || { crop: null, trips: 0 };
+                plots.push({ w: p.size, h: p.size, weight: crop.trips, zone: unit.partner ? zone : 0, facility: p.facility, crop: crop.crop });
+                planned.push({ x: p.x, y: p.y });
+                count(p.facility);
+                placedInBlocks[`${p.facility}|${crop.crop}`] = (placedInBlocks[`${p.facility}|${crop.crop}`] || 0) + 1;
+            });
         });
-        Object.values(crops).forEach(list => list.sort((a, b) => b.trips - a.trips));
-        layouts.forEach(p => {
-            const crop = (crops[p.facility] || []).shift() || { crop: null, trips: 0 };
-            members.push({ x: p.x, y: p.y, w: p.size, h: p.size, weight: crop.trips, facility: p.facility, crop: crop.crop });
-            count(p.facility);
-            placedInBlocks[`${p.facility}|${crop.crop}`] = (placedInBlocks[`${p.facility}|${crop.crop}`] || 0) + 1;
-        });
-        pieces.push({ members });
+        pieces.push({ cluster: true, buildings, plots, planned });
     });
 
     // Everything else, one unit at a time; environment crops no map took count here too.
@@ -1001,7 +1009,9 @@ function homelandPieces(plan, input) {
             return;
         }
         for (let i = 0; i < n; i++) {
-            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: tripsPerUnit(step), facility: step.facility, crop: step.status === 'producing' ? step.item_name : null }] });
+            // A crop growing with no building of its own stays out of every coverage square.
+            const growing = step.status === 'producing';
+            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: tripsPerUnit(step), facility: step.facility, crop: growing ? step.item_name : null, sensitive: growing && COVERAGE_SENSITIVE.has(step.facility) }] });
         }
         count(step.facility, n);
     });
@@ -1060,7 +1070,8 @@ function renderHomelandLayout(plan) {
         layoutWorker = null;
         if (runId !== layoutRunId) return;
         const layout = event.data;
-        const members = layout.pieces.flatMap(p => p.members);
+        // Buildings carry nothing themselves.
+        const members = layout.pieces.flatMap(p => p.members).map(m => ({ ...m, weight: m.weight || 0 }));
         const trips = members.reduce((sum, m) => sum + m.weight, 0);
         const walked = members.reduce((sum, m) => sum + m.weight * Math.hypot(m.x + m.w / 2, m.y + m.h / 2), 0);
         const missing = unplaced.length ? ` Not placed, size unknown: ${unplaced.join(', ')}.` : '';
@@ -1091,7 +1102,7 @@ function homelandSvg(layout) {
     const lines = [];
     for (let x = minX; x <= maxX; x++) lines.push(`<line x1="${x}" y1="${minY}" x2="${x}" y2="${maxY}" />`);
     for (let y = minY; y <= maxY; y++) lines.push(`<line x1="${minX}" y1="${y}" x2="${maxX}" y2="${y}" />`);
-    const maxTrips = Math.max(...layout.pieces.flatMap(p => p.members.map(m => m.weight)), 1e-9);
+    const maxTrips = Math.max(...layout.pieces.flatMap(p => p.members.map(m => m.weight || 0)), 1e-9);
     const shapes = layout.pieces.flatMap(p => p.members).map(m => {
         const color = layoutColor(m);
         const tip = `${m.facility}${m.crop ? `: ${prettyItem(m.crop)}` : m.building && m.mode ? ` (${m.mode})` : ' (idle)'}${m.weight > 0 ? `, ${formatRate(m.weight)} trips/hour, ${Math.hypot(m.x + m.w / 2, m.y + m.h / 2).toFixed(1)} tiles away` : ''}`;
