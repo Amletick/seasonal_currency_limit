@@ -663,6 +663,7 @@ function improvementCandidates(base, setup) {
         if (!base.exclude.includes(recipe.name) || skipped.has(recipe.name)) continue;
         if (recipe.facility && !owns(recipe.facility)) continue;
         candidates.push({
+            kind: 'Recipes',
             label: recipe.note ? `Recipe Note: ${prettyItem(recipe.name)}` : `Unlock ${prettyItem(recipe.name)}`,
             input: { ...base, exclude: base.exclude.filter(name => name !== recipe.name) },
         });
@@ -671,6 +672,7 @@ function improvementCandidates(base, setup) {
     for (const name of [...skipped].sort((a, b) => prettyItem(a).localeCompare(prettyItem(b)))) {
         if (!base.exclude.includes(name)) continue;
         candidates.push({
+            kind: 'Recipes',
             label: `Unskip ${prettyItem(name)}`,
             input: { ...base, exclude: base.exclude.filter(n => n !== name) },
         });
@@ -688,7 +690,7 @@ function improvementCandidates(base, setup) {
             const level = base.aniimo_levels[ability] ?? defaultLevelFor(ability);
             for (const next of levelsAbove(level, defaultLevelFor(ability))) {
                 candidates.push({
-                    group: `aniimo:${ability}`,
+                    kind: 'Aniimo', group: `aniimo:${ability}`, family: `${ability} Aniimo`, level: next,
                     label: `${ability} Aniimo Lv ${next}`,
                     input: { ...base, aniimo_levels: { ...base.aniimo_levels, [ability]: next } },
                 });
@@ -700,7 +702,7 @@ function improvementCandidates(base, setup) {
             if (!ability || !owns(name)) continue;
             for (const next of levelsAbove(worker.suitability, defaultLevelFor(ability))) {
                 candidates.push({
-                    group: `worker:${name}`,
+                    kind: 'Aniimo', group: `worker:${name}`, family: `${name} Aniimo`, level: next,
                     label: `${name} Aniimo Lv ${next}`,
                     input: { ...base, workers: { ...base.workers, [name]: { ...worker, suitability: next } } },
                 });
@@ -715,7 +717,7 @@ function improvementCandidates(base, setup) {
         for (const [module, level] of Object.entries(base.modules)) {
             for (const next of levelsAbove(level, allowed.modules[module] ?? 0)) {
                 candidates.push({
-                    group: `module:${module}`,
+                    kind: 'Modules', group: `module:${module}`, family: MODULE_NAMES[module] || module, level: next,
                     label: `${MODULE_NAMES[module] || module} Lv ${next}`,
                     input: { ...base, modules: { ...base.modules, [module]: next } },
                 });
@@ -728,7 +730,8 @@ function improvementCandidates(base, setup) {
             if (tierCount(tiers) < tierCount(cap)) {
                 for (const level of levelsAbove(0, capLevel)) {
                     candidates.push({
-                        group: `another:${f.name}`,
+                        kind: 'Facilities', group: `another:${f.name}`, family: `+1 ${f.name}`,
+                        level: f.hasLevels === false || capLevel === 1 ? null : level,
                         label: f.hasLevels === false || capLevel === 1 ? `+1 ${f.name}` : `+1 ${f.name} (Lv ${level})`,
                         input: { ...base, facilities: { ...base.facilities, [f.name]: [...tiers, { count: 1, level }] } },
                     });
@@ -742,7 +745,8 @@ function improvementCandidates(base, setup) {
                     .filter(t => t.count > 0)
                     .concat({ count: 1, level });
                 candidates.push({
-                    group: `upgrade:${f.name}`,
+                    kind: 'Facilities', group: `upgrade:${f.name}`, level,
+                    family: tierCount(tiers) > 1 ? `1 ${f.name} to` : `${f.name} to`,
                     label: tierCount(tiers) > 1 ? `1 ${f.name} to Lv ${level}` : `${f.name} to Lv ${level}`,
                     input: { ...base, facilities: { ...base.facilities, [f.name]: raised } },
                 });
@@ -879,9 +883,42 @@ function renderImprovements() {
     } else {
         hint.textContent = `Ranked by ${by}. ${rows.length} of ${options} help.${within}`;
     }
-    document.getElementById('improve-list').innerHTML = rows.length
+    // The list is rebuilt as each result comes in; keep it open if the player opened it.
+    const open = !!document.querySelector('#improve-list .improve-checked')?.open;
+    document.getElementById('improve-list').innerHTML = (rows.length
         ? `<ol class="improve-list">${rows.map(r => `<li><span class="improve-name">${r.candidate.label}</span><span class="improve-gain">${r.gain.text}</span></li>`).join('')}</ol>`
-        : '';
+        : '') + improvementsChecked(best, open);
+}
+
+// Everything the ranking tries, by kind, each with how it came out: the gain, "no gain", or
+// still to check. A change tried at several levels is one line, e.g. "Earth Aniimo Lv 2–4".
+function improvementsChecked(best, open) {
+    if (!ranking.candidates.length) return '';
+    const groups = new Map();
+    ranking.candidates.forEach((candidate, i) => {
+        const key = candidate.group || `#${i}`;
+        if (!groups.has(key)) groups.set(key, { kind: candidate.kind, candidates: [], indices: [] });
+        groups.get(key).candidates.push(candidate);
+        groups.get(key).indices.push(i);
+    });
+    const kinds = new Map();
+    for (const [key, group] of groups) {
+        const first = group.candidates[0];
+        const levels = group.candidates.map(c => c.level).filter(l => l != null);
+        const name = first.family
+            ? `${first.family}${levels.length ? ` Lv ${levels.length > 1 ? `${levels[0]}–${levels[levels.length - 1]}` : levels[0]}` : ''}`
+            : first.label;
+        const done = group.indices.every(i => ranking.results[i]);
+        const found = best.get(key);
+        const outcome = found
+            ? `<span class="improve-gain">${found.candidate.level != null && levels.length > 1 ? `Lv ${found.candidate.level}: ` : ''}${found.gain.text}</span>`
+            : done ? '<span class="hint small">no gain</span>' : '<span class="hint small">checking…</span>';
+        if (!kinds.has(group.kind)) kinds.set(group.kind, []);
+        kinds.get(group.kind).push(`<li><span>${name}</span>${outcome}</li>`);
+    }
+    return `<details class="explain improve-checked"${open ? ' open' : ''}><summary>What was checked</summary>${[...kinds]
+        .map(([kind, items]) => `<p class="assume-title">${kind}</p><ul class="improve-checked-list">${items.join('')}</ul>`)
+        .join('')}</details>`;
 }
 
 // --- Season ----------------------------------------------------------------------------

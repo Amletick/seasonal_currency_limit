@@ -2467,3 +2467,24 @@ tr:hover .skip-row,
 .improve-gain {
     color: var(--accent);
 }
+
+/* Ways to improve: everything the ranking tried. */
+.improve-checked {
+    margin-top: 0.9rem;
+}
+
+.improve-checked-list {
+    list-style: none;
+    margin: 0.35rem 0 0;
+    padding: 0;
+    display: grid;
+    gap: 0.25rem;
+    font-size: 0.85rem;
+}
+
+.improve-checked-list li {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.2rem 1rem;
+}
