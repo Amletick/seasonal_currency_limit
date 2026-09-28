@@ -164,24 +164,16 @@
                                 <span class="chevron" aria-hidden="true"></span>
                                 <h2>Aniimo team</h2>
                             </button>
-                            <div class="aniimo-setup-controls">
-                                <div class="tabs compact" role="radiogroup" aria-label="Aniimo setup">
-                                    <label title="The best Aniimo you have, with each facility's personality"><input type="radio" name="aniimo-setup" id="aniimo-best" value="best" checked> Best</label>
-                                    <label title="The lowest ability level each recipe accepts: the least you can get by with"><input type="radio" name="aniimo-setup" id="aniimo-minimum" value="minimum"> Minimum</label>
-                                </div>
-                                <details class="aniimo-levels">
-                                    <summary title="Which Aniimo the plan may assume">Aniimo: <span id="aniimo-levels-summary">all level 4</span></summary>
-                                    <div class="aniimo-levels-body">
-                                        <div class="tabs compact" role="radiogroup" aria-label="How to say which Aniimo you have">
-                                            <label><input type="radio" name="aniimo-detail" id="aniimo-by-ability" value="ability" checked> By ability</label>
-                                            <label><input type="radio" name="aniimo-detail" id="aniimo-by-facility" value="facility"> Customize</label>
-                                        </div>
-                                        <p class="hint small" id="aniimo-detail-hint">Tick the abilities you have at level 4. An ability left unticked is planned at level 3.</p>
-                                        <div class="level-four-list" id="level-four-list"></div>
-                                        <div class="aniimo-facility-list" id="aniimo-facility-list" style="display: none;"></div>
-                                    </div>
-                                </details>
+                            <div class="tabs compact" role="radiogroup" aria-label="Aniimo setup">
+                                <label title="The best Aniimo you have, with each facility's personality"><input type="radio" name="aniimo-setup" id="aniimo-best" value="best" checked> Best</label>
+                                <label title="The lowest ability level each recipe accepts: the least you can get by with"><input type="radio" name="aniimo-setup" id="aniimo-minimum" value="minimum"> Minimum</label>
+                                <label title="Say which Aniimo works each facility"><input type="radio" name="aniimo-setup" id="aniimo-custom" value="custom"> Custom</label>
                             </div>
+                        </div>
+                        <div class="aniimo-setup-panel" id="aniimo-setup-panel">
+                            <p class="hint small" id="aniimo-setup-hint"></p>
+                            <div class="ability-levels" id="ability-levels"></div>
+                            <div class="facility-workers" id="facility-workers" hidden></div>
                         </div>
                         <p class="collapsed-summary" id="aniimo-collapsed-summary"></p>
                         <div class="ability-strip" id="aniimo-abilities" aria-label="Aniimo needed per ability"></div>
@@ -189,7 +181,7 @@
                         <div id="aniimo-body" hidden>
                             <details class="explain">
                                 <summary>How the team is worked out</summary>
-                                <p><strong>Best</strong> puts the best Aniimo you said you have on every job, with the facility's personality. Aniimo level up by ability, so tick the abilities you have at level 4 beside the tabs above; an ability left unticked is planned at level 3. <strong>Minimum</strong> uses the lowest ability level each recipe accepts, with no personality bonus: slower, but it's what you need at the very least. An Aniimo is fastest on recipes below its level: a level-4 one works a processor's level-1 recipe at 500% and a level-2 one at 400%, but a Well's level-1 recipe at 250%. The plan below follows whichever is picked.</p>
+                                <p><strong>Best</strong> puts the best Aniimo you said you have on every job, with the facility's personality. Aniimo level up by ability, so pick the level you have of each under the tabs above. <strong>Custom</strong> goes facility by facility, for a roster where the level is there but the personality isn't. <strong>Minimum</strong> uses the lowest ability level each recipe accepts, with no personality bonus: slower, but it's what you need at the very least. An Aniimo is fastest on recipes below its level: a level-4 one works a processor's level-1 recipe at 500% and a level-2 one at 400%, but a Well's level-1 recipe at 250%. The plan below follows whichever is picked.</p>
                                 <p>Each Aniimo takes on as much as it can: any job needing its ability at or below its level, for as many hours as it has, so long as no two of those facilities want opposite personalities. Work that takes any level, like the Farmland and Woodland jobs, fills whatever time is left over. Facilities with a resident Aniimo (Sandcastle, Dewy House and the like) need one each, and so does each Heat Furnace (Fire), Cooling Unit (Ice) and Sunlamp (Light) in use. An Aniimo carries four personalities at once, one from each opposed pair, shown as letters over its portrait: Instinctive or Energetic (I/E), Nimble or Practical (N/S), Faithful or Tenacious (F/T), Playful or Judicious (P/J). So one can hold the bonus at up to four facilities, never at two wanting opposites, and only while it has hours to spare. The team below is the best combination that allows, and each Aniimo lists every personality it has to have. Whether an environment building's Aniimo level or personality matters isn't known yet. Each recipe's minimum ability level and the Farmland/Woodland jobs haven't been checked in game yet.</p>
                             </details>
                             <div id="aniimo-summary"></div>

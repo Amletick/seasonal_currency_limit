@@ -2301,79 +2301,73 @@ tr:hover .skip-row,
     cursor: pointer;
 }
 
-/* Which abilities the player has at level 4, beside the Best and Minimum tabs. */
-.aniimo-levels {
-    font-size: 0.82rem;
-    color: var(--text-muted, #9aa0a8);
+/* Saying which Aniimo you have: ability levels under Best, facility by facility under Custom. */
+.aniimo-setup-panel {
+    padding: 0.1rem 0 0.9rem;
 }
 
-.aniimo-levels > summary {
-    cursor: pointer;
-    white-space: nowrap;
-    list-style: none;
+.aniimo-setup-panel > .hint {
+    margin: 0 0 0.6rem;
 }
 
-.aniimo-levels > summary::-webkit-details-marker {
-    display: none;
-}
-
-.aniimo-levels > summary::after {
-    content: ' \25be';
-}
-
-.aniimo-levels[open] > summary::after {
-    content: ' \25b4';
-}
-
-.level-four-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem 0.9rem;
-    padding: 0.5rem 0 0.1rem;
-}
-
-.level-four-list label {
-    display: flex;
-    align-items: center;
-    gap: 0.3rem;
-    cursor: pointer;
-}
-
-.level-four-list label.fixed {
-    opacity: 0.6;
-    cursor: default;
-}
-
-/* Saying which Aniimo you have, facility by facility. */
-.aniimo-levels-body {
-    padding-top: 0.4rem;
-}
-
-.aniimo-facility-list {
+.ability-levels,
+.facility-workers {
     display: grid;
-    gap: 0.3rem;
-    padding: 0.5rem 0 0.1rem;
+    gap: 0.35rem;
 }
 
-.aniimo-facility {
+.ability-levels {
+    grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+}
+
+.ability-level,
+.facility-worker {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    flex-wrap: wrap;
 }
 
-.aniimo-facility-name {
-    min-width: 11rem;
+.facility-worker-name {
+    min-width: 11.5rem;
+    font-size: 0.86rem;
 }
 
-.aniimo-facility select {
-    padding: 0.05rem 0.2rem;
+.ability-level .ability,
+.facility-worker .ability {
+    min-width: 5.5rem;
+    text-align: center;
+}
+
+/* A level, in the same segmented style as the tabs above but sized for a digit. */
+.tabs.level-picker {
+    margin: 0;
+    padding: 2px;
+    border-radius: 8px;
+}
+
+.tabs.level-picker label {
+    padding: 0.15rem 0.5rem;
+    border-radius: 6px;
     font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
 }
 
-.aniimo-facility label {
-    display: flex;
+/* A personality the plan may count on, ticked or not. */
+.chip-toggle {
+    display: inline-flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.3rem;
+    padding: 0.1rem 0.5rem;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
     cursor: pointer;
+    user-select: none;
+}
+
+.chip-toggle:has(input:checked) {
+    border-color: color-mix(in srgb, var(--accent, #6aa9ff) 60%, transparent);
+    background: color-mix(in srgb, var(--accent, #6aa9ff) 12%, transparent);
+    color: var(--text);
 }
