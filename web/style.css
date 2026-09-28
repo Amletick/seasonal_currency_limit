@@ -2497,8 +2497,17 @@ tr:hover .skip-row,
 
 .layout-svg {
     width: 100%;
-    max-height: 80vh;
+    max-height: 90vh;
     display: block;
+}
+
+.layout-whole {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    margin-top: 0.6rem;
+    font-size: 0.85rem;
+    cursor: pointer;
 }
 
 .layout-svg text {

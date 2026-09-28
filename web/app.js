@@ -1064,6 +1064,13 @@ function layoutHomeLevel() {
     return isSimpleMode() ? selectedHomeLevel() : homeLevelCovering(lastPlanInput);
 }
 
+function attachLayoutHandlers() {
+    document.getElementById('layout-whole').addEventListener('change', (e) => {
+        layoutShowsWhole = e.target.checked;
+        if (lastLayout) document.getElementById('layout-diagram').innerHTML = homelandSvg(lastLayout.layout, lastLayout.homeLevel);
+    });
+}
+
 function renderHomelandLayout(plan) {
     const card = document.getElementById('layout-card');
     if (!plan?.success || !lastPlanInput) {
@@ -1102,6 +1109,7 @@ function renderHomelandLayout(plan) {
         document.getElementById('layout-summary').textContent = `${trips > 0
             ? `${formatNumber(Math.round(trips))} trips/hour to the Storage Unit, ${(walked / trips).toFixed(1)} tiles each on average, in the ${cells.length} plot${cells.length === 1 ? '' : 's'} open at RV ${homeLevel}.`
             : 'Nothing in this plan is carried to the Storage Unit.'}${notes ? ` ${notes}` : ''}`;
+        lastLayout = { layout, homeLevel };
         document.getElementById('layout-diagram').innerHTML = homelandSvg(layout, homeLevel);
         const layoutStep = progress?.steps.find(s => s.key === 'layout');
         if (layoutStep) layoutStep.spots = layout.tried;
@@ -1114,22 +1122,30 @@ function renderHomelandLayout(plan) {
     layoutWorker.postMessage({ pieces, cells: cells.map(({ x, y, w, h }) => ({ x, y, w, h })) });
 }
 
+// Whether the layout shows the whole homeland rather than just what's placed; the player's toggle.
+let layoutShowsWhole = false;
+let lastLayout = null;
+
 function homelandSvg(layout, homeLevel) {
     // Each environment building in use covers the 9x9 square around its center, drawn under
     // everything in its mode's color as on the building's own map.
     const coverage = layout.pieces.flatMap(p => p.members)
         .filter(m => m.building && m.mode)
         .map(m => ({ x: m.x + m.w / 2 - ENVIRONMENT_COVERAGE_RADIUS, y: m.y + m.h / 2 - ENVIRONMENT_COVERAGE_RADIUS, w: ENVIRONMENT_COVERAGE_RADIUS * 2, h: ENVIRONMENT_COVERAGE_RADIUS * 2, mode: m.mode }));
-    // The whole homeland, its plots marked out and the ones not open yet shaded.
+    // The whole homeland, its plots marked out and the ones not open yet shaded and labelled.
     const plots = homelandPlots();
-    const minX = -1;
-    const minY = -1;
-    const maxX = Math.max(...plots.map(p => p.x + p.w)) + 1;
-    const maxY = Math.max(...plots.map(p => p.y + p.h)) + 1;
+    // Zoomed to what's placed, a couple of tiles around it, unless the whole homeland is asked for.
+    const placed = [layout.storage, ...layout.pieces.flatMap(p => p.members)];
+    const whole = layoutShowsWhole;
+    const minX = whole ? -1 : Math.floor(Math.min(...placed.map(r => r.x))) - 2;
+    const minY = whole ? -1 : Math.floor(Math.min(...placed.map(r => r.y))) - 2;
+    const maxX = whole ? Math.max(...plots.map(p => p.x + p.w)) + 1 : Math.ceil(Math.max(...placed.map(r => r.x + r.w))) + 2;
+    const maxY = whole ? Math.max(...plots.map(p => p.y + p.h)) + 1 : Math.ceil(Math.max(...placed.map(r => r.y + r.h))) + 2;
     const plotShapes = plots.map(p => {
         const open = p.number <= homeLevel;
+        // Only plots still to come are labelled, with the RV level that opens them.
         return `<g class="layout-plot${open ? '' : ' locked'}"><rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" />
-            <text x="${p.x + 0.6}" y="${p.y + 0.9}" font-size="0.9">RV ${p.number}</text></g>`;
+            ${open ? '' : `<text x="${p.x + 0.6}" y="${p.y + 0.9}" font-size="0.9">RV ${p.number}</text>`}</g>`;
     }).join('');
     const lines = [];
     for (let x = minX; x <= maxX; x++) lines.push(`<line x1="${x}" y1="${minY}" x2="${x}" y2="${maxY}" />`);
@@ -3517,6 +3533,7 @@ document.addEventListener('DOMContentLoaded', () => {
     attachSpecialHandlers();
     renderSpecialRecipes();
     attachSeasonHandlers();
+    attachLayoutHandlers();
     attachPriorityHandlers();
     showAniimoSetup();
     applyConfigMode();
