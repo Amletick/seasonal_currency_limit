@@ -7,9 +7,9 @@
 // a real area (the rule in coverage.rs), or for two buildings placed to overlap, the zone the plan
 // gives it (the first's alone, both, or the second's alone). Temperatures add up where squares
 // meet, so no covered plot reaches another building's square, and the squares of different
-// buildings don't overlap. Crops the plan grows with no building of their own stay out of every
-// square too, so none picks up a temperature it wasn't planned for. Anything else may stand
-// anywhere. Pieces may touch but not overlap, sit on a quarter-tile grid (the smallest step in
+// buildings don't overlap. Pieces marked `sensitive` (crops that need an environment, grown
+// without one) stay out of every square too, so none picks up a temperature it wasn't planned
+// for. Anything else, including crops that need no environment, may stand anywhere. Pieces may touch but not overlap, sit on a quarter-tile grid (the smallest step in
 // any footprint), and may be turned a quarter at a time.
 //
 // Busiest pieces for their size go down first, each where it costs least; then each is lifted

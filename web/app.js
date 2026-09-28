@@ -933,9 +933,9 @@ function tripsPerUnit(step) {
     return (busy / step.cycle_time / step.facility_count) * 3600;
 }
 
-// Facilities whose crops a growing environment changes (`ENVIRONMENT_GATED_FACILITIES` in
-// coverage.rs).
-const COVERAGE_SENSITIVE = new Set(['Farmland', 'Woodland', 'Dewy House', 'Starfall Hammock', 'Tidewhisper Sandcastle', 'Floral Windmill']);
+// Whether a crop needs a growing environment: grown without one, a building's temperature
+// would change it. Crops that need none grow the same anywhere.
+const needsEnvironment = item => !!recipeIndex.find(r => r.name === item)?.environment;
 
 // The plan as pieces for `layOut`: environment blocks, then one piece per other facility unit,
 // then whatever the player owns that the plan doesn't use.
@@ -1009,9 +1009,10 @@ function homelandPieces(plan, input) {
             return;
         }
         for (let i = 0; i < n; i++) {
-            // A crop growing with no building of its own stays out of every coverage square.
+            // A crop that needs an environment but is grown without one stays out of every
+            // coverage square, so no building's temperature changes it.
             const growing = step.status === 'producing';
-            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: tripsPerUnit(step), facility: step.facility, crop: growing ? step.item_name : null, sensitive: growing && COVERAGE_SENSITIVE.has(step.facility) }] });
+            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: tripsPerUnit(step), facility: step.facility, crop: growing ? step.item_name : null, sensitive: growing && needsEnvironment(step.item_name) }] });
         }
         count(step.facility, n);
     });

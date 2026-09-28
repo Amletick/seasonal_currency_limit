@@ -275,8 +275,8 @@ export const FACILITY_FOOTPRINTS = {
     'Joy Wheel Loom': [4, 4],
     'Woodworking Bench': [2, 1.5],
     'Chimney Kiln': [5.5, 5.5],
-    'Dance Pad Polisher': null,
-    'Aniipod Maker': null,
+    'Dance Pad Polisher': [2.5, 2.5],
+    'Aniipod Maker': [4.5, 4.5],
     'Storage Unit': [2, 2],
 };
 

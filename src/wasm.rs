@@ -1818,6 +1818,8 @@ struct RecipeInfo {
     verified: bool,
     /// For crops and trees, each Aniimo job in growing order: `(step, ability, min level)`.
     jobs: Vec<(String, String, u32)>,
+    /// The growing environment a crop or tree needs, if any.
+    environment: Option<String>,
 }
 
 /// Get the full recipe list for every item in the game data, grouped by nothing in particular
@@ -1848,6 +1850,7 @@ pub fn get_all_items() -> String {
             aniimo: requirements.get(&item.name).map(|(ability, level)| (ability.to_string(), level)),
             verified: !unverified.iter().any(|(name, facility)| *name == item.name && *facility == item.facility),
             jobs: grower_steps.get(&item.name).iter().map(|s| (s.step.clone(), s.ability.clone(), s.min_level)).collect(),
+            environment: item.environment.clone(),
         })
         .collect();
 
