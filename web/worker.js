@@ -47,7 +47,8 @@ const SOLVE_OPTIONS = { mip_rel_gap: 0, time_limit: EXACT_TIME_LIMIT };
 const STRICT_OPTIONS = { ...SOLVE_OPTIONS, mip_feasibility_tolerance: 1e-9 };
 
 // Solves one exact-planner model with HiGHS: `{ values, proven, objective }`, or null if HiGHS
-// found no plan at all.
+// found no plan at all. `objective` leaves out the model's tie-break (see `BUILDING_TIE_BREAK` in
+// exact.rs), so it's what the plan really makes and can be a floor for a later solve.
 async function solveModel(problem, options = SOLVE_OPTIONS) {
     let result = (await newHighs()).solve(problem.lp, options);
     if (result.Status === 'Infeasible') {
@@ -59,7 +60,8 @@ async function solveModel(problem, options = SOLVE_OPTIONS) {
     const proven = result.Status === 'Optimal';
     if (!proven && result.Status !== 'Time limit reached') return null;
     const values = Array.from({ length: problem.variables }, (_, i) => result.Columns['x' + i]?.Primal ?? 0);
-    return { values, proven, objective: result.ObjectiveValue };
+    const tiebreak = (problem.tiebreak || []).reduce((sum, [v, weight]) => sum + weight * (values[v] || 0), 0);
+    return { values, proven, objective: result.ObjectiveValue + tiebreak };
 }
 
 // The exact planner (see `exact_problem` in wasm.rs): builds the model in wasm, solves it with

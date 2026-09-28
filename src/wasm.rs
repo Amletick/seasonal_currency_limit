@@ -1277,14 +1277,14 @@ pub fn exact_byproduct_problems(input_json: &str) -> String {
     let problems: Vec<serde_json::Value> = crate::exact::byproducts(&prepared.items)
         .iter()
         .map(|resource| {
-            let (lp, variables) = crate::exact::write_lp(
+            let problem = crate::exact::write_lp(
                 &prepared.items,
                 &prepared.input.currency,
                 &prepared.facility_counts,
                 &prepared.module_levels,
                 crate::exact::Goal::MostOf(resource),
             );
-            serde_json::json!({ "resource": resource, "lp": lp, "variables": variables })
+            serde_json::json!({ "resource": resource, "lp": problem.lp, "variables": problem.variables, "tiebreak": problem.tiebreak })
         })
         .collect();
     serde_json::Value::Array(problems).to_string()
@@ -1305,9 +1305,9 @@ pub fn exact_priority_problem(input_json: &str, stage_json: &str, target: &str) 
             &prepared.module_levels,
             crate::exact::Goal::Earn { floors: &stage.floors },
         ),
-        Err(_) => (String::new(), 0),
+        Err(_) => Default::default(),
     };
-    serde_json::json!({ "lp": lp.0, "variables": lp.1 }).to_string()
+    lp_json(&lp)
 }
 
 /// For the level-up strategy, the model for the soonest level-up (see
@@ -1325,11 +1325,11 @@ pub fn exact_level_up_problem(input_json: &str) -> String {
                 &prepared.module_levels,
                 crate::exact::Goal::LevelUp(level_up),
             ),
-            _ => (String::new(), 0),
+            _ => Default::default(),
         },
-        Err(_) => (String::new(), 0),
+        Err(_) => Default::default(),
     };
-    serde_json::json!({ "lp": lp.0, "variables": lp.1 }).to_string()
+    lp_json(&lp)
 }
 
 /// What the earlier solves settled, for [`exact_problem`] and [`exact_plan`].
@@ -1359,8 +1359,10 @@ impl JsStage {
 }
 
 /// The exact planner's model for this input (see [`crate::exact`]), for the caller to solve with
-/// HiGHS and hand back to [`exact_plan`]: `{"lp": <CPLEX LP text>, "variables": <count>}`, where
-/// the variables are `x0` up to `x<count - 1>`. `stage_json` is `{"floors": [[byproduct, per
+/// HiGHS and hand back to [`exact_plan`]: `{"lp": <CPLEX LP text>, "variables": <count>,
+/// "tiebreak": [[variable, weight], ...]}`, where the variables are `x0` up to `x<count - 1>` and
+/// the tie-break is added back to the solver's objective to get what it really made (see
+/// [`crate::exact::LpProblem`]). `stage_json` is `{"floors": [[byproduct, per
 /// second], ...], "pace": <level-ups per day>}` from the earlier solves (see
 /// [`exact_byproduct_problems`] and [`exact_level_up_problem`]); either can be left out. `lp` is
 /// empty when the exact planner doesn't cover the input (a byproduct as the currency), so the
@@ -1376,9 +1378,14 @@ pub fn exact_problem(input_json: &str, stage_json: &str) -> String {
             &prepared.module_levels,
             stage.goal(&prepared.input),
         ),
-        _ => (String::new(), 0),
+        _ => Default::default(),
     };
-    serde_json::json!({ "lp": lp.0, "variables": lp.1 }).to_string()
+    lp_json(&lp)
+}
+
+/// `{"lp", "variables", "tiebreak"}` for a model (see [`crate::exact::LpProblem`]).
+fn lp_json(problem: &crate::exact::LpProblem) -> String {
+    serde_json::json!({ "lp": problem.lp, "variables": problem.variables, "tiebreak": problem.tiebreak }).to_string()
 }
 
 /// The solver's answer to [`exact_problem`]'s model.

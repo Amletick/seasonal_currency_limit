@@ -912,7 +912,7 @@ function improvementsChecked(best, status, open) {
         const found = best.get(key);
         const outcome = found
             ? `<span class="improve-gain">${found.candidate.level != null && levels.length > 1 ? `Lv ${found.candidate.level}: ` : ''}${found.gain.text}</span>`
-            : done ? '<span class="hint small">no gain</span>' : '<span class="hint small">checking…</span>';
+            : `<span class="improve-none">${done ? 'no gain' : 'checking…'}</span>`;
         if (!kinds.has(group.kind)) kinds.set(group.kind, []);
         kinds.get(group.kind).push(`<li><span>${name}</span>${outcome}</li>`);
     }

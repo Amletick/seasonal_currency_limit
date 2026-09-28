@@ -335,3 +335,18 @@ fn exact_target_streams_add_up_to_the_rate() {
         assert!(streams.iter().all(|&(_, lead)| lead > 0.0), "{target}: a stream with no wait");
     }
 }
+
+// Three plots of Sugarcane want Scorching, and one Heat Furnace covers all three, so a plan with
+// two Furnaces owned sets up just the one: the second would earn nothing and need its own Aniimo.
+#[test]
+fn exact_uses_the_fewest_environment_buildings() {
+    let Some(items) = load_items() else { return };
+    let counts = FacilityCounts::only(&[("Farmland", 3, 5), ("Heat Furnace", 2, 1)]);
+    let plan = solve_and_check(&items, &counts, &ModuleLevels::default());
+    assert_eq!(plan.units.get("sugarcane"), Some(&3), "units {:?}", plan.units);
+    let buildings: u32 = plan.environment.iter().map(|e| e.count).sum::<u32>() + 2 * plan.pairs.iter().map(|p| p.count).sum::<u32>();
+    assert_eq!(buildings, 1, "environment {:?}, pairs {:?}", plan.environment, plan.pairs);
+    // What the plan reports earning leaves the tie-break out.
+    let recomputed = check_plan(&plan, &items, "coins", &counts, &ModuleLevels::default(), None).unwrap();
+    assert!((plan.objective - recomputed).abs() < 1e-9, "objective {} vs {recomputed}", plan.objective);
+}

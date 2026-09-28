@@ -247,7 +247,16 @@ struct Model<'a> {
     priority: Vec<u8>,
     kinds: Vec<VarKind<'a>>,
     constraints: Vec<Constraint>,
+    /// `(variable, weight)` for the tie-break in the objective (see [`BUILDING_TIE_BREAK`]),
+    /// so a solve's objective can be given back without it.
+    tiebreak: Vec<(usize, f64)>,
 }
+
+/// What each environment building a plan sets up costs in the objective: far too little to give
+/// up anything real for (0.036 coins an hour), but enough that of plans that are otherwise equal,
+/// the one with the fewest buildings wins. Each building in use needs an Aniimo, and otherwise
+/// the solver is free to spread three plots over two Heat Furnaces that one would cover.
+const BUILDING_TIE_BREAK: f64 = 1e-5;
 
 impl<'a> Model<'a> {
     fn add(&mut self, objective: f64, bounds: (f64, f64), integer: bool, kind: VarKind<'a>) -> usize {
@@ -314,6 +323,7 @@ fn build_model<'a>(
         priority: Vec::new(),
         kinds: Vec::new(),
         constraints: Vec::new(),
+        tiebreak: Vec::new(),
     };
 
     // Seeds are paid in coins, so they only come off a coin total.
@@ -603,7 +613,25 @@ fn build_model<'a>(
         }
         Goal::LevelUp(_) | Goal::EarnWhileLevelingUp(..) | Goal::StockUp(..) => {}
     }
+    // Of plans otherwise equal, the fewest environment buildings: a pair is two.
+    for v in 0..model.kinds.len() {
+        let buildings = match model.kinds[v] {
+            VarKind::Environment { .. } => 1.0,
+            VarKind::EnvironmentPair { .. } => 2.0,
+            _ => continue,
+        };
+        model.objective[v] -= BUILDING_TIE_BREAK * buildings;
+        model.tiebreak.push((v, BUILDING_TIE_BREAK * buildings));
+    }
     model
+}
+
+impl Model<'_> {
+    /// A solve's objective without the tie-break (see [`BUILDING_TIE_BREAK`]): what it really
+    /// made of what it maximized.
+    fn untied(&self, objective: f64, values: &[f64]) -> f64 {
+        objective + self.tiebreak.iter().map(|&(v, w)| w * values.get(v).copied().unwrap_or(0.0)).sum::<f64>()
+    }
 }
 
 const INTEGRAL: f64 = 1e-6;
@@ -908,7 +936,7 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
     let rate_per_second = model.earnings.iter().zip(values).map(|(c, v)| c * v).sum();
     ExactPlan {
         rate_per_second,
-        objective: value,
+        objective: model.untied(value, values),
         upper_bound,
         proven_optimal,
         nodes,
@@ -1054,13 +1082,25 @@ pub fn check_plan(
 
 /// The model in CPLEX LP format, for solving with an external solver, and how many variables it
 /// has (`x0` up to `x<count - 1>`; a solver may leave out any that no constraint mentions).
+/// A model written out for an external solver.
+#[derive(Debug, Clone, Default)]
+pub struct LpProblem {
+    /// CPLEX LP text.
+    pub lp: String,
+    /// How many variables, `x0` up to `x<variables - 1>`.
+    pub variables: usize,
+    /// `(variable, weight)` to add back to the solver's objective to take the tie-break out of it
+    /// (see [`BUILDING_TIE_BREAK`]), before using it as a floor for a later solve.
+    pub tiebreak: Vec<(usize, f64)>,
+}
+
 pub fn write_lp(
     items: &[ProductionItem],
     currency: &str,
     facility_counts: &FacilityCounts,
     module_levels: &ModuleLevels,
     goal: Goal,
-) -> (String, usize) {
+) -> LpProblem {
     let model = build_model(items, currency, facility_counts, module_levels, goal);
     let term = |c: f64, v: usize| format!("{} {} x{v}", if c < 0.0 { "-" } else { "+" }, c.abs());
     let mut out = String::from("Maximize\n obj:");
@@ -1095,7 +1135,7 @@ pub fn write_lp(
         }
     }
     out.push_str("End\n");
-    (out, model.objective.len())
+    LpProblem { lp: out, variables: model.objective.len(), tiebreak: model.tiebreak.clone() }
 }
 
 /// Builds an [`ExactPlan`] from an external solver's variable values (in [`write_lp`]'s `x0`,

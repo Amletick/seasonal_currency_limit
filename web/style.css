@@ -2448,7 +2448,8 @@ tr:hover .skip-row,
 /* Ways to improve: one row per change, its gain beside it. */
 .improve-list {
     margin: 0.75rem 0 0;
-    padding-left: 1.5rem;
+    padding-left: 0;
+    list-style: none;
     display: grid;
     gap: 0.45rem;
 }
@@ -2486,7 +2487,13 @@ tr:hover .skip-row,
     display: flex;
     flex-wrap: wrap;
     justify-content: space-between;
+    align-items: baseline;
     gap: 0.2rem 1rem;
+}
+
+.improve-none {
+    color: var(--text-muted);
+    font-size: 0.8rem;
 }
 
 /* Homeland layout. */
