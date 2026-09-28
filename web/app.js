@@ -1,7 +1,7 @@
 // Aniimax Web Application
 
 import {
-    FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS,
+    FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
     MAX_HOME_LEVEL, ANIIMO_MAX, simpleSetup,
     LEVEL_UP_COSTS, LEVEL_UP_CHAINS, SPECIAL_RECIPES, SEASON, ANIIPOD_TIERS, personalityLetter, opposedPersonality,
 } from './facility-config.js';
@@ -790,11 +790,12 @@ function rankImprovementsFor(setup) {
         if (type === 'progress') {
             if (result.index === -1) current.base = result;
             else current.results[result.index] = result;
-            setStep('improve', 'start', `${current.results.filter(Boolean).length} of ${candidates.length}`);
+            current.explored = (current.explored || 0) + (result.nodes || 0);
+            setStep('improve', 'start', `${current.results.filter(Boolean).length} of ${candidates.length}`, current.explored);
         } else {
             current.done = true;
             if (ok) rankingsBySetup[setup] = current;
-            setStep('improve', ok ? 'done' : 'fail', `${candidates.length} checked`);
+            setStep('improve', ok ? 'done' : 'fail', `${candidates.length} checked`, current.explored);
             rankWorker.terminate();
             rankWorker = null;
         }
@@ -1050,6 +1051,19 @@ const initialsOf = name => name.split(/[\s-]+/).map(w => w[0]).join('').toUpperC
 let layoutRunId = 0;
 let layoutWorker = null;
 
+// Every plot of the homeland, `{ number, x, y, w, h }` in tiles, with the top left at the origin.
+function homelandPlots() {
+    return HOMELAND_PLOTS.flatMap((row, r) => row.map((number, c) => ({
+        number, x: c * HOMELAND_PLOT_SIZE.w, y: r * HOMELAND_PLOT_SIZE.h, w: HOMELAND_PLOT_SIZE.w, h: HOMELAND_PLOT_SIZE.h,
+    })));
+}
+
+// The RV level the layout is for: the one given in Simple mode, else the lowest that allows
+// everything entered (see `homeLevelCovering`).
+function layoutHomeLevel() {
+    return isSimpleMode() ? selectedHomeLevel() : homeLevelCovering(lastPlanInput);
+}
+
 function renderHomelandLayout(plan) {
     const card = document.getElementById('layout-card');
     if (!plan?.success || !lastPlanInput) {
@@ -1061,8 +1075,10 @@ function renderHomelandLayout(plan) {
     card.style.display = 'block';
     document.getElementById('layout-summary').textContent = 'Laying out…';
     document.getElementById('layout-diagram').innerHTML = '';
-    // Worked out in a worker of its own: a large homeland takes about a second.
+    // Worked out in a worker of its own: a large homeland takes a few seconds.
     const { pieces, unplaced } = homelandPieces(plan, lastPlanInput);
+    const homeLevel = layoutHomeLevel();
+    const cells = homelandPlots().filter(p => p.number <= homeLevel);
     if (layoutWorker) layoutWorker.terminate();
     layoutWorker = new Worker(WORKER_URL.replace('worker.js', 'layout-worker.js'), { type: 'module' });
     layoutWorker.onmessage = (event) => {
@@ -1070,42 +1086,59 @@ function renderHomelandLayout(plan) {
         layoutWorker = null;
         if (runId !== layoutRunId) return;
         const layout = event.data;
+        const at = layout.storageAt;
         // Buildings carry nothing themselves.
         const members = layout.pieces.flatMap(p => p.members).map(m => ({ ...m, weight: m.weight || 0 }));
         const trips = members.reduce((sum, m) => sum + m.weight, 0);
-        const walked = members.reduce((sum, m) => sum + m.weight * Math.hypot(m.x + m.w / 2, m.y + m.h / 2), 0);
-        const missing = unplaced.length ? ` Not placed, size unknown: ${unplaced.join(', ')}.` : '';
-        document.getElementById('layout-summary').textContent = trips > 0
-            ? `${formatNumber(Math.round(trips))} trips/hour to the Storage Unit, ${(walked / trips).toFixed(1)} tiles each on average.${missing}`
-            : `Nothing in this plan is carried to the Storage Unit.${missing}`;
-        document.getElementById('layout-diagram').innerHTML = homelandSvg(layout);
-        setStep('layout', 'done');
+        const walked = members.reduce((sum, m) => sum + m.weight * Math.hypot(m.x + m.w / 2 - at.x, m.y + m.h / 2 - at.y), 0);
+        const noRoom = [...new Set(layout.unplaced.map(i => {
+            const piece = pieces[i];
+            return piece.cluster ? `${piece.buildings[0].facility} and its plots` : piece.members[0].facility;
+        }))];
+        const notes = [
+            noRoom.length ? `No room found in RV ${homeLevel}'s plots for: ${noRoom.join(', ')}.` : '',
+            unplaced.length ? `Not placed, size unknown: ${unplaced.join(', ')}.` : '',
+        ].filter(Boolean).join(' ');
+        document.getElementById('layout-summary').textContent = `${trips > 0
+            ? `${formatNumber(Math.round(trips))} trips/hour to the Storage Unit, ${(walked / trips).toFixed(1)} tiles each on average, in the ${cells.length} plot${cells.length === 1 ? '' : 's'} open at RV ${homeLevel}.`
+            : 'Nothing in this plan is carried to the Storage Unit.'}${notes ? ` ${notes}` : ''}`;
+        document.getElementById('layout-diagram').innerHTML = homelandSvg(layout, homeLevel);
+        const layoutStep = progress?.steps.find(s => s.key === 'layout');
+        if (layoutStep) layoutStep.spots = layout.tried;
+        setStep('layout', 'done', `${formatNumber(layout.tried)} spots`);
     };
     layoutWorker.onerror = (event) => {
         console.error('Homeland layout failed:', event.message || event);
         if (runId === layoutRunId) setStep('layout', 'fail');
     };
-    layoutWorker.postMessage({ pieces });
+    layoutWorker.postMessage({ pieces, cells: cells.map(({ x, y, w, h }) => ({ x, y, w, h })) });
 }
 
-function homelandSvg(layout) {
+function homelandSvg(layout, homeLevel) {
     // Each environment building in use covers the 9x9 square around its center, drawn under
     // everything in its mode's color as on the building's own map.
     const coverage = layout.pieces.flatMap(p => p.members)
         .filter(m => m.building && m.mode)
         .map(m => ({ x: m.x + m.w / 2 - ENVIRONMENT_COVERAGE_RADIUS, y: m.y + m.h / 2 - ENVIRONMENT_COVERAGE_RADIUS, w: ENVIRONMENT_COVERAGE_RADIUS * 2, h: ENVIRONMENT_COVERAGE_RADIUS * 2, mode: m.mode }));
-    const rects = [layout.storage, ...layout.pieces.flatMap(p => p.members), ...coverage];
-    const minX = Math.floor(Math.min(...rects.map(r => r.x))) - 1;
-    const minY = Math.floor(Math.min(...rects.map(r => r.y))) - 1;
-    const maxX = Math.ceil(Math.max(...rects.map(r => r.x + r.w))) + 1;
-    const maxY = Math.ceil(Math.max(...rects.map(r => r.y + r.h))) + 1;
+    // The whole homeland, its plots marked out and the ones not open yet shaded.
+    const plots = homelandPlots();
+    const minX = -1;
+    const minY = -1;
+    const maxX = Math.max(...plots.map(p => p.x + p.w)) + 1;
+    const maxY = Math.max(...plots.map(p => p.y + p.h)) + 1;
+    const plotShapes = plots.map(p => {
+        const open = p.number <= homeLevel;
+        return `<g class="layout-plot${open ? '' : ' locked'}"><rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" />
+            <text x="${p.x + 0.6}" y="${p.y + 0.9}" font-size="0.9">RV ${p.number}</text></g>`;
+    }).join('');
     const lines = [];
     for (let x = minX; x <= maxX; x++) lines.push(`<line x1="${x}" y1="${minY}" x2="${x}" y2="${maxY}" />`);
     for (let y = minY; y <= maxY; y++) lines.push(`<line x1="${minX}" y1="${y}" x2="${maxX}" y2="${y}" />`);
     const maxTrips = Math.max(...layout.pieces.flatMap(p => p.members.map(m => m.weight || 0)), 1e-9);
     const shapes = layout.pieces.flatMap(p => p.members).map(m => {
         const color = layoutColor(m);
-        const tip = `${m.facility}${m.crop ? `: ${prettyItem(m.crop)}` : m.building && m.mode ? ` (${m.mode})` : ' (idle)'}${m.weight > 0 ? `, ${formatRate(m.weight)} trips/hour, ${Math.hypot(m.x + m.w / 2, m.y + m.h / 2).toFixed(1)} tiles away` : ''}`;
+        const away = Math.hypot(m.x + m.w / 2 - (layout.storage.x + layout.storage.w / 2), m.y + m.h / 2 - (layout.storage.y + layout.storage.h / 2));
+        const tip = `${m.facility}${m.crop ? `: ${prettyItem(m.crop)}` : m.building && m.mode ? ` (${m.mode})` : ' (idle)'}${m.weight > 0 ? `, ${formatRate(m.weight)} trips/hour, ${away.toFixed(1)} tiles away` : ''}`;
         const label = Math.min(m.w, m.h) >= 1.5 ? `<text x="${m.x + m.w / 2}" y="${m.y + m.h / 2}" font-size="${Math.min(0.8, m.w / 3)}">${initialsOf(m.facility)}</text>` : '';
         // Busier pieces are filled more solidly; idle ones are an outline.
         const fill = m.building ? 0.9 : m.weight > 0 ? 0.35 + 0.55 * Math.sqrt(m.weight / maxTrips) : 0.08;
@@ -1131,12 +1164,15 @@ function homelandSvg(layout) {
     }).join('');
     const s = layout.storage;
     return `<svg class="layout-svg" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}" role="img" aria-label="Homeland layout">
+        <defs><pattern id="layout-locked" width="1" height="1" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <line x1="0" y1="0" x2="0" y2="1" class="layout-hatch" /></pattern></defs>
         <g class="env-grid">${lines.join('')}</g>
+        <g class="layout-plots">${plotShapes}</g>
         <g class="layout-coverage">${coverageShapes}</g>
         ${shapes}
         <g class="layout-coverage-edges" pointer-events="none">${coverageEdges}</g>
         <g><title>Storage Unit</title><rect x="${s.x + 0.04}" y="${s.y + 0.04}" width="${s.w - 0.08}" height="${s.h - 0.08}" rx="0.2" class="layout-storage" />
-        <text x="0" y="0" font-size="0.8" class="layout-storage-text">SU</text></g>
+        <text x="${s.x + s.w / 2}" y="${s.y + s.h / 2}" font-size="0.8" class="layout-storage-text">SU</text></g>
     </svg>`;
 }
 
@@ -1165,8 +1201,10 @@ function startProgress(input, runId) {
 }
 
 // Moves step `key` on: 'start', 'done', 'skip' or 'fail', with an optional note such as
-// "3 of 12". The backup planner only appears if the exact one couldn't run.
-function setStep(key, state, detail) {
+// "3 of 12", and for a solve, how many partial plans its search explored (HiGHS's node count;
+// the rest of the possibilities it ruled out without visiting). The backup planner only appears
+// if the exact one couldn't run.
+function setStep(key, state, detail, explored) {
     if (!progress || progress.runId !== planRunId) return;
     let step = progress.steps.find(s => s.key === key);
     if (!step && key === 'backup') {
@@ -1185,6 +1223,7 @@ function setStep(key, state, detail) {
         step.state = 'skipped';
     }
     if (detail !== undefined) step.detail = detail;
+    if (explored !== undefined) step.explored = explored;
     renderProgress();
 }
 
@@ -1213,9 +1252,17 @@ function renderProgress() {
         skipped: '<span class="step-icon skipped" aria-label="Skipped">–</span>',
     }[state] || '<span class="step-icon pending" aria-label="Waiting">•</span>');
     const time = ms => ms == null ? '' : ms < 1000 ? `${Math.max(1, Math.round(ms))} ms` : `${(ms / 1000).toFixed(1)} s`;
+    const explored = n => n ? `${formatNumber(n)} explored` : '';
+    const total = progress.steps.reduce((sum, s) => sum + (s.explored || 0), 0);
+    const spots = progress.steps.find(s => s.key === 'layout')?.spots;
+    const totals = [
+        total ? `${formatNumber(total)} partial plans explored` : '',
+        spots ? `${formatNumber(spots)} layout spots tried` : '',
+    ].filter(Boolean).join(', ');
     card.innerHTML = `<ol class="progress-steps">${progress.steps.map(step => `
         <li class="progress-step ${step.state}">${icon(step.state)}<span class="step-label">${step.label}</span>
-            <span class="step-note">${[step.detail, step.state === 'done' || step.state === 'fail' ? time(step.ms) : ''].filter(Boolean).join(' · ')}</span></li>`).join('')}</ol>`;
+            <span class="step-note">${[step.detail, explored(step.explored), step.state === 'done' || step.state === 'fail' ? time(step.ms) : ''].filter(Boolean).join(' · ')}</span></li>`).join('')}</ol>
+        ${totals ? `<p class="progress-total" title="The solver explores partial plans one branch at a time and rules out the rest of the possibilities by their bounds, without visiting them.">In all: ${totals}.</p>` : ''}`;
 }
 
 // --- Season ----------------------------------------------------------------------------
@@ -3139,7 +3186,7 @@ async function runFindPlan() {
         const bestJson = await callWorker('find_plan', JSON.stringify({ ...input, aniimo: bestSetup }), (count) => {
             // The exact planner reports each solve; the backup planner counts its trials.
             if (typeof count === 'object') {
-                setStep(count.step, count.state);
+                setStep(count.step, count.state, undefined, count.stats?.nodes);
                 return;
             }
             setStep('backup', 'start', `trial ${count}`);

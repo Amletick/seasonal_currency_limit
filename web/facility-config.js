@@ -280,6 +280,16 @@ export const FACILITY_FOOTPRINTS = {
     'Storage Unit': [2, 2],
 };
 
+// The homeland: a 4x4 grid of plots, each 20 tiles wide and 15 tall, plot n opening at RV n (and
+// all of them from RV 16). Rows from the top, by plot number; the first opens bottom middle.
+export const HOMELAND_PLOT_SIZE = { w: 20, h: 15 };
+export const HOMELAND_PLOTS = [
+    [13, 14, 15, 16],
+    [12, 7, 8, 9],
+    [11, 4, 3, 6],
+    [10, 2, 1, 5],
+];
+
 // An Aniimo carries four personalities at once, one from each of these opposed pairs, which the
 // game shows as four letters over its portrait: INFP, ISFJ, ESTJ and so on. So one Aniimo can
 // hold the bonus for up to four facilities, and can never hold it for two that want opposite

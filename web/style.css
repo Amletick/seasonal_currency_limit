@@ -2584,3 +2584,34 @@ tr:hover .skip-row,
         animation-duration: 2.4s;
     }
 }
+
+.progress-total {
+    margin: 0.6rem 0 0;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+/* Homeland plots in the layout: open ones outlined and numbered, the rest hatched. */
+.layout-plot rect {
+    fill: none;
+    stroke: var(--text-muted);
+    stroke-opacity: 0.6;
+    stroke-width: 0.12;
+}
+
+.layout-plot.locked rect {
+    fill: url(#layout-locked);
+}
+
+.layout-svg .layout-plot text {
+    text-anchor: start;
+    dominant-baseline: hanging;
+    fill: var(--text-muted);
+    font-weight: 600;
+}
+
+.layout-hatch {
+    stroke: var(--text-muted);
+    stroke-opacity: 0.25;
+    stroke-width: 0.12;
+}
