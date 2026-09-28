@@ -2416,3 +2416,25 @@ tr:hover .skip-row,
     font-size: 0.7em;
     vertical-align: super;
 }
+
+/* Harvest Moon Festival: a switch, then the season's inputs while it's on. */
+.season {
+    margin: 0 0 1.25rem;
+}
+
+.season-switch {
+    font-size: 0.95rem;
+    color: var(--text);
+}
+
+.season-title {
+    font-weight: 600;
+}
+
+#season-config {
+    margin-top: 0.75rem;
+}
+
+#season-config .input-field {
+    max-width: 16rem;
+}

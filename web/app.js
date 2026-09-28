@@ -3,7 +3,7 @@
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME,
     MAX_HOME_LEVEL, ANIIMO_MAX, simpleSetup,
-    LEVEL_UP_COSTS, LEVEL_UP_CHAINS, SPECIAL_RECIPES, ANIIPOD_TIERS, personalityLetter, opposedPersonality,
+    LEVEL_UP_COSTS, LEVEL_UP_CHAINS, SPECIAL_RECIPES, SEASON, ANIIPOD_TIERS, personalityLetter, opposedPersonality,
 } from './facility-config.js';
 
 let wasmReady = false;
@@ -337,7 +337,7 @@ function getPersistedFieldIds() {
         'mode-simple', 'mode-advanced', 'home-level',
         'ecological-module-level', 'kitchen-module-level',
         'resource-detector-level', 'crafting-module-level',
-        'rate-unit'
+        'rate-unit', 'season-on', 'season-wheat'
     ];
 }
 
@@ -583,9 +583,49 @@ function attachSpecialHandlers() {
     });
 }
 
+// --- Season ----------------------------------------------------------------------------
+// The Harvest Moon Festival (see `SEASON`): on the page from RV 10, or always in Advanced mode,
+// where there's no RV level to go by. While it's on, plans may use the season's recipes, bar Recipe
+// Notes the player hasn't unlocked, and say how much Moonray Wheat their seeds cost a day.
+
+function seasonAvailable() {
+    return !isSimpleMode() || selectedHomeLevel() >= SEASON.minHomeLevel;
+}
+
+function seasonActive() {
+    return seasonAvailable() && document.getElementById('season-on').checked;
+}
+
+// The most Moonray Wheat a day seeds may cost (`JsPlanInput::season_wheat`), or null for no cap:
+// season orders pay out far more than seeds cost, so the field starts blank.
+function seasonWheatCap() {
+    const value = document.getElementById('season-wheat').value.trim();
+    return value === '' ? null : Math.max(0, numberOrDefault(value, 0));
+}
+
+function renderSeason() {
+    document.getElementById('season-section').hidden = !seasonAvailable();
+    document.getElementById('season-config').hidden = !seasonActive();
+    document.getElementById('season-notes').innerHTML = SEASON.recipeNotes.map(r => `
+        <label class="special-option">
+            <input type="checkbox" data-special="${r.name}"${unlockedSpecial.has(r.name) ? ' checked' : ''}>
+            <span>${prettyItem(r.name)} <span class="hint small">${r.cost} wheat</span></span>
+        </label>`).join('');
+}
+
+function attachSeasonHandlers() {
+    document.getElementById('season-on').addEventListener('change', renderStrategy);
+    document.getElementById('season-notes').addEventListener('change', (e) => {
+        const name = e.target.dataset.special;
+        if (!name) return;
+        if (e.target.checked) unlockedSpecial.add(name); else unlockedSpecial.delete(name);
+        saveInputsToStorage();
+    });
+}
+
 // Every recipe plans may not use: the player's skips and any special recipe not unlocked.
 function excludedRecipes() {
-    const locked = SPECIAL_RECIPES.map(r => r.name).filter(name => !unlockedSpecial.has(name));
+    const locked = [...SPECIAL_RECIPES, ...SEASON.recipeNotes].map(r => r.name).filter(name => !unlockedSpecial.has(name));
     // Going for Aniipods means the best tier only; the others would be cheaper but catch worse.
     const best = wantsAniipods() ? bestAniipod() : null;
     const lesser = best ? ANIIPOD_TIERS.filter(name => name !== best) : [];
@@ -621,7 +661,8 @@ async function loadRecipeIndex() {
 // The Recipes section's badge, e.g. " (2 on, 3 skipped)", so what's set shows while it's closed.
 function renderRecipeCount() {
     const parts = [];
-    if (unlockedSpecial.size) parts.push(`${unlockedSpecial.size} on`);
+    const on = [...unlockedSpecial].filter(name => SPECIAL_NAMES.has(name)).length;
+    if (on) parts.push(`${on} on`);
     if (skippedRecipes.size) parts.push(`${skippedRecipes.size} skipped`);
     document.getElementById('recipe-count').textContent = parts.length ? ` (${parts.join(', ')})` : '';
 }
@@ -813,6 +854,7 @@ const ITEM_NAMES = {
     coins: 'Coins',
     wood_block: 'Wood Blocks',
     mineral_sand: 'Mineral Sand',
+    umbral_sweet_and_spicy_sauce: 'Umbral Sweet and Spicy Sauce',
     coarse_sifted_ore: 'Coarse-Sifted Ore',
     river_washed_stones: 'River-Washed Stones',
     premium_river_washed_stones: 'Premium River-Washed Stones',
@@ -834,6 +876,7 @@ const PRIORITY_TARGETS = [
     { id: 'aniipods', label: 'Aniipods' },
     { id: 'Wood Blocks', label: 'Wood Blocks' },
     { id: 'Mineral Sand', label: 'Mineral Sand' },
+    { id: 'season_points', label: SEASON.points, season: true },
 ];
 
 // Drawn arrows rather than the ↑/↓ characters, which some systems render as colored emoji.
@@ -846,9 +889,15 @@ function isPriorityStrategy() {
     return document.getElementById('strategy-priorities').checked;
 }
 
+// The priorities on the page: season points only while the season is on.
+function shownPriorities() {
+    const season = seasonActive();
+    return priorityOrder.filter(p => season || !PRIORITY_TARGETS.find(t => t.id === p.target)?.season);
+}
+
 // The ticked priorities, best first; none for the level-up strategy.
 function activePriorities() {
-    return isPriorityStrategy() ? priorityOrder.filter(p => p.on).map(p => p.target) : [];
+    return isPriorityStrategy() ? shownPriorities().filter(p => p.on).map(p => p.target) : [];
 }
 
 function wantsAniipods() {
@@ -863,13 +912,18 @@ function priorityLabel(target, aniipod = bestAniipod()) {
 
 function renderPriorities() {
     const best = bestAniipod();
-    document.getElementById('priority-list').innerHTML = priorityOrder.map((p, i) => {
+    const shown = shownPriorities();
+    document.getElementById('priority-list').innerHTML = shown.map((p, at) => {
+        // Indices into `priorityOrder`, which also holds any priority that isn't shown.
+        const i = priorityOrder.indexOf(p);
+        const above = at > 0 ? priorityOrder.indexOf(shown[at - 1]) : -1;
+        const below = at < shown.length - 1 ? priorityOrder.indexOf(shown[at + 1]) : -1;
         const label = priorityLabel(p.target, best);
         const note = p.target === 'aniipods' && !best ? ' <span class="hint small">(no Aniipod Maker yet)</span>' : '';
         return `
         <li class="priority${p.on ? '' : ' off'}" draggable="true" data-index="${i}">
             <span class="drag-handle" aria-hidden="true">⋮⋮</span>
-            <span class="priority-rank">${p.on ? priorityOrder.slice(0, i + 1).filter(q => q.on).length : ''}</span>
+            <span class="priority-rank">${p.on ? shown.slice(0, at + 1).filter(q => q.on).length : ''}</span>
             <span class="priority-name">${label}${note}</span>
             <label class="priority-switch" title="${p.on ? 'On: the plan goes for this' : 'Off: the plan ignores this'}">
                 <input type="checkbox" role="switch" data-toggle="${i}" aria-label="${label}"${p.on ? ' checked' : ''}>
@@ -877,8 +931,8 @@ function renderPriorities() {
                 <span class="switch-text">${p.on ? 'On' : 'Off'}</span>
             </label>
             <span class="priority-move">
-                <button type="button" data-move="${i}" data-by="-1" aria-label="Move ${label} up"${i === 0 ? ' disabled' : ''}>${ARROW_UP}</button>
-                <button type="button" data-move="${i}" data-by="1" aria-label="Move ${label} down"${i === priorityOrder.length - 1 ? ' disabled' : ''}>${ARROW_DOWN}</button>
+                <button type="button" data-move="${i}" data-to="${above}" data-by="-1" aria-label="Move ${label} up"${above < 0 ? ' disabled' : ''}>${ARROW_UP}</button>
+                <button type="button" data-move="${i}" data-to="${below}" data-by="1" aria-label="Move ${label} down"${below < 0 ? ' disabled' : ''}>${ARROW_DOWN}</button>
             </span>
         </li>`;
     }).join('');
@@ -904,9 +958,9 @@ function attachPriorityHandlers() {
     list.addEventListener('click', (e) => {
         const button = e.target.closest('[data-move]');
         if (!button) return;
-        const from = Number(button.dataset.move);
-        movePriority(from, from + Number(button.dataset.by));
-        list.querySelector(`[data-move="${from + Number(button.dataset.by)}"][data-by="${button.dataset.by}"]`)?.focus();
+        const to = Number(button.dataset.to);
+        movePriority(Number(button.dataset.move), to);
+        list.querySelector(`[data-move="${to}"][data-by="${button.dataset.by}"]`)?.focus();
     });
     let dragFrom = null;
     list.addEventListener('dragstart', (e) => {
@@ -986,6 +1040,7 @@ function populateLevelUpTargets() {
 }
 
 function renderStrategy() {
+    renderSeason();
     const levelUp = isLevelUpStrategy();
     document.getElementById('level-up-config').style.display = levelUp ? 'block' : 'none';
     document.getElementById('priorities-config').style.display = levelUp ? 'none' : 'block';
@@ -1154,7 +1209,8 @@ function renderSeedTable(plan) {
             const cost = recipeIndex.find(r => r.name === s.item_name)?.cost || 0;
             // Whole seeds when counting to the level-up.
             const seeds = levelUp ? Math.ceil(perSecond * multiplier) : perSecond * multiplier;
-            return { name: s.item_name, facility: s.facility, plots: s.facility_count, seeds, cost: seeds * cost };
+            const wheat = SEASON.crops.includes(s.item_name) ? seeds * SEASON.seedCost : 0;
+            return { name: s.item_name, facility: s.facility, plots: s.facility_count, seeds, cost: seeds * cost, wheat };
         })
         .sort((a, b) => b.seeds - a.seeds);
     if (rows.length === 0) {
@@ -1175,7 +1231,7 @@ function renderSeedTable(plan) {
                 <td>${prettyItem(r.name)}</td>
                 <td>${r.plots}</td>
                 <td>${amount(r.seeds)}</td>
-                <td>${r.cost > 0 ? `${amount(r.cost)} coins` : 'free'}</td>
+                <td>${r.wheat > 0 ? `${amount(r.wheat)} ${SEASON.currency}` : r.cost > 0 ? `${amount(r.cost)} coins` : 'free'}</td>
             </tr>`).join('')}</tbody>
             ${rows.length > 1 && totalCost > 0 ? `<tfoot><tr><td colspan="3">Total</td><td>${amount(totalCost)} coins</td></tr></tfoot>` : ''}
         </table>`;
@@ -1227,6 +1283,8 @@ function getPlanInputValues() {
             prioritize_byproducts: false,
             level_up: levelUpInput(),
             exclude: excludedRecipes(),
+            season: seasonActive(),
+        season_wheat: seasonWheatCap(),
             facilities,
             modules
         };
@@ -1253,6 +1311,8 @@ function getPlanInputValues() {
         prioritize_byproducts: false,
         level_up: levelUpInput(),
         exclude: excludedRecipes(),
+        season: seasonActive(),
+        season_wheat: seasonWheatCap(),
         facilities,
         modules
     };
@@ -1321,7 +1381,7 @@ function showError(message) {
 function renderGoalTargets(plan) {
     const select = document.getElementById('goal-target');
     const previous = select.value;
-    const rows = priorityRows(plan);
+    const rows = priorityRows(plan).filter(r => !r.spent);
     select.innerHTML = rows.map(r => `<option value="${r.target}">${goalName(r)}</option>`).join('');
     if (rows.some(r => r.target === previous)) select.value = previous;
 }
@@ -2214,7 +2274,7 @@ function updateRateDisplay(pickUnit = false) {
     // Step the unit up until the smallest rate reads at least 1 (Aniipods per hour, Rough Lumber
     // per hour, not 0.01 per second); a plain coin rate only needs to read above zero.
     const costRates = (lastPlan.level_up?.requirements || []).map(r => r.per_second);
-    const rates = (rows ? rows.map(r => r.perSecond) : costRates).filter(r => r > 1e-9);
+    const rates = (rows ? rows.filter(r => !r.spent).map(r => r.perSecond) : costRates).filter(r => r > 1e-9);
     const smallest = rates.length ? Math.min(...rates) : lastPlan.rate_per_second;
     const least = rates.length ? 1 : 0.05;
     while (pickUnit && smallest * RATE_UNIT_SECONDS[select.value].multiplier < least) {
@@ -2228,7 +2288,9 @@ function updateRateDisplay(pickUnit = false) {
     if (!rows) {
         if (select.closest('#priority-rates')) rateLine.appendChild(select);
         const label = CURRENCY_LABELS[lastPlan.currency] || lastPlan.currency;
-        document.getElementById('plan-rate').textContent = `${formatNumber(lastPlan.rate_per_second * multiplier)} ${label}${suffix}`;
+        const points = lastPlan.season_points > 1e-12 ? ` + ${formatRate(lastPlan.season_points * multiplier)} ${SEASON.points}` : '';
+        const wheat = lastPlan.season_wheat > 1e-12 ? ` (seeds take ${formatRate(lastPlan.season_wheat * multiplier)} ${SEASON.currency}${suffix})` : '';
+        document.getElementById('plan-rate').textContent = `${formatNumber(lastPlan.rate_per_second * multiplier)} ${label}${points}${suffix}${wheat}`;
         document.getElementById('rate-label').textContent = 'Your rate';
         rateLine.style.display = '';
         table.innerHTML = '';
@@ -2276,6 +2338,13 @@ function priorityRows(plan) {
     }));
     if (!rows.some(r => r.target === 'coins')) {
         rows.push({ rank: null, target: 'coins', label: rows.length ? "Coins, from what's left" : 'Coins', perSecond: plan.rate_per_second, items: [], missing: null });
+    }
+    // During the season, points come with every season item sold, ranked or not.
+    if (plan.season_points != null && !rows.some(r => r.target === 'season_points')) {
+        rows.push({ rank: null, target: 'season_points', label: SEASON.points, perSecond: plan.season_points, items: [], missing: null });
+    }
+    if (plan.season_wheat > 1e-12) {
+        rows.push({ rank: null, target: 'season_wheat', label: `${SEASON.currency} spent on seeds`, perSecond: plan.season_wheat, items: [], missing: null, spent: true });
     }
     return rows;
 }
@@ -2466,7 +2535,7 @@ async function runFindPlan() {
 // keystroke of the goal-amount fields. No-op until a plan exists.
 async function runTimeToGoal() {
     if (!lastPlan || !lastPlan.success || planContext?.levelUp) return;
-    const rows = priorityRows(lastPlan);
+    const rows = priorityRows(lastPlan).filter(r => !r.spent);
     const chosen = rows.find(r => r.target === document.getElementById('goal-target').value) || rows[0];
     const name = goalName(chosen);
     document.getElementById('target-amount-label').textContent = `Target ${name}`;
@@ -2717,6 +2786,7 @@ document.addEventListener('DOMContentLoaded', () => {
     renderSkippedRecipes();
     attachSpecialHandlers();
     renderSpecialRecipes();
+    attachSeasonHandlers();
     attachPriorityHandlers();
     showAniimoSetup();
     applyConfigMode();

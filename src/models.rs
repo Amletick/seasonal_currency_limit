@@ -41,6 +41,7 @@ pub fn byproduct_item(resource: &str) -> Option<&'static str> {
 ///     workload: None,
 ///     byproduct: None,
 ///     environment: None,
+///     season: None,
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -85,6 +86,40 @@ pub struct ProductionItem {
     /// actually cover, not just by how many plots they own; see
     /// `crate::optimizer::solve_facility_allocation`.
     pub environment: Option<String>,
+    /// What a limited-time season adds to the item, or `None` outside one (see [`SeasonTerms`]).
+    pub season: Option<SeasonTerms>,
+}
+
+/// The priority and currency name for a season's points (see [`SeasonTerms::points`]).
+pub const SEASON_POINTS: &str = "season_points";
+
+/// A season item's terms, e.g. for the Harvest Moon Festival an Umbral Hot Pot sells for 2150
+/// coins and 8 points, and a Moondew Radish's seeds cost 4 Moonray Wheat. The season currency
+/// comes from daily orders, so the player says how much they get a day and every season crop's
+/// seeds share it.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SeasonTerms {
+    /// Season points per unit sold, on top of its coins.
+    pub points: f64,
+    /// Season currency the seeds for one batch cost; 0 for anything that isn't a season crop.
+    pub seed_cost: f64,
+    /// Season currency the player has a day for seeds, the same on every season item;
+    /// `f64::INFINITY` when the player doesn't cap it.
+    pub budget_per_day: f64,
+}
+
+impl ProductionItem {
+    /// What one unit sold earns of `currency`: its sell value if it sells for that, or its season
+    /// points for [`SEASON_POINTS`].
+    pub fn earns(&self, currency: &str) -> f64 {
+        if currency == SEASON_POINTS {
+            self.season.map_or(0.0, |s| s.points)
+        } else if self.sell_currency == currency {
+            self.sell_value
+        } else {
+            0.0
+        }
+    }
 }
 
 /// Efficiency at a processor for an Aniimo `above` levels above what the recipe needs, whatever

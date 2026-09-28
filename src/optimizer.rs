@@ -3457,6 +3457,15 @@ pub fn find_production_plan_with_progress(
     prioritize_byproducts: bool,
     on_progress: Option<&dyn Fn(u32)>,
 ) -> Option<ProductionPlan> {
+    // This planner can't share a season's currency between seeds (see
+    // `crate::models::SeasonTerms`), so it plants no season crops; the exact planner does.
+    let unseasoned: Vec<ProductionItem>;
+    let items = if items.iter().any(|i| i.season.is_some_and(|s| s.seed_cost > 0.0)) {
+        unseasoned = items.iter().filter(|i| i.season.is_none_or(|s| s.seed_cost <= 0.0)).cloned().collect();
+        &unseasoned[..]
+    } else {
+        items
+    };
     PACKING_CACHE.with(|cache| cache.borrow_mut().clear());
     ALLOCATION_CACHE.with(|cache| cache.borrow_mut().clear());
     let item_map: HashMap<&str, &ProductionItem> =

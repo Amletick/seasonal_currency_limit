@@ -15,6 +15,9 @@
 //!   runs one mode and one coverage mix (see [`crate::coverage::single_building_options`]).
 //! - Woodland and Mine byproducts (Wood Blocks, Mineral Sand) balance like any other item, so the
 //!   Woodworking Bench and Chimney Kiln can use them.
+//! - During a season, its crops' seeds cost the season currency, and all of them together can
+//!   cost at most what the player gets a day (see [`crate::models::SeasonTerms`]). Season items
+//!   also earn points when sold, which a priority or floor can name as [`crate::models::SEASON_POINTS`].
 //! - The objective is the target currency per second from everything sold; for coins, minus seed
 //!   costs (seeds are paid in coins, so they don't come off an Aniimo EXP total). A floor can
 //!   name another currency, so a plan keeps up the Aniimo EXP or Aniipods an earlier solve found
@@ -185,6 +188,18 @@ const STOCK_UP_COIN_WEIGHT: f64 = 1e-6;
 /// covers doesn't leave the model unbounded.
 const MAX_PACE: f64 = PACE_UNIT;
 
+/// The season currency a day's orders give, per second, for season crops' seeds; every season
+/// item carries the same budget.
+fn season_budget_per_second(recipes: &[&ProductionItem]) -> f64 {
+    recipes.iter().filter_map(|r| r.season).map(|s| s.budget_per_day).fold(0.0, f64::max) / 86_400.0
+}
+
+/// The season currency `exact` spends on seeds per second.
+pub fn season_seed_spend(exact: &ExactPlan, items: &[ProductionItem]) -> f64 {
+    let all: HashMap<&str, &ProductionItem> = items.iter().map(|i| (i.name.as_str(), i)).collect();
+    exact.recipe_rates.iter().filter_map(|(name, rate)| all.get(name.as_str())?.season.map(|s| rate * s.seed_cost)).sum()
+}
+
 /// Every byproduct any recipe makes (e.g. `"Wood Blocks"`, `"Mineral Sand"`), sorted.
 pub fn byproducts(items: &[ProductionItem]) -> Vec<String> {
     let mut names: Vec<String> = items.iter().filter_map(|i| i.byproduct.as_ref().map(|(r, _)| r.clone())).collect();
@@ -328,6 +343,16 @@ fn build_model<'a>(
         units_of.push((recipe, units));
     }
 
+    // Season crops' seeds share the season currency the player gets a day.
+    let seeds: Vec<(usize, f64)> = rate_of
+        .iter()
+        .filter_map(|&(recipe, rate)| recipe.season.filter(|s| s.seed_cost > 0.0).map(|s| (rate, s.seed_cost)))
+        .collect();
+    let budget = season_budget_per_second(&recipes);
+    if !seeds.is_empty() && budget.is_finite() {
+        model.constrain(seeds, ComparisonOp::Le, budget);
+    }
+
     // Item balances: made >= used + sold.
     let mut balance: BTreeMap<&str, Vec<(usize, f64)>> = BTreeMap::new();
     for &(recipe, rate) in &rate_of {
@@ -349,15 +374,12 @@ fn build_model<'a>(
         Goal::Earn { floors } => floors.iter().map(|(name, _)| name.as_str()).collect(),
         _ => Vec::new(),
     };
-    let mut sold_of: Vec<(usize, &str, f64)> = Vec::new();
+    let mut sold_of: Vec<(usize, &ProductionItem)> = Vec::new();
     for (&item_name, terms) in &mut balance {
-        if let Some(item) = all.get(item_name) {
-            let sells_for = item.sell_currency.as_str();
-            let wanted = sells_for == currency || floor_currencies.contains(&sells_for);
-            if wanted && item.sell_value > 0.0 {
-                let earns = if sells_for == currency { item.sell_value } else { 0.0 };
-                let sold = model.add(earns, (0.0, f64::INFINITY), false, VarKind::Sold(item.name.as_str()));
-                sold_of.push((sold, sells_for, item.sell_value));
+        if let Some(&item) = all.get(item_name) {
+            if item.earns(currency) > 0.0 || floor_currencies.iter().any(|&c| item.earns(c) > 0.0) {
+                let sold = model.add(item.earns(currency), (0.0, f64::INFINITY), false, VarKind::Sold(item.name.as_str()));
+                sold_of.push((sold, item));
                 terms.push((sold, -1.0));
             }
         }
@@ -578,7 +600,7 @@ fn build_model<'a>(
                 // Otherwise it's a currency: everything sold for it, at its value, less seed costs
                 // for coins (seeds are paid in coins).
                 let mut sold: Vec<(usize, f64)> =
-                    sold_of.iter().filter(|(_, c, _)| c == resource).map(|&(v, _, value)| (v, value)).collect();
+                    sold_of.iter().filter(|(_, item)| item.earns(resource) > 0.0).map(|&(v, item)| (v, item.earns(resource))).collect();
                 if resource == "coins" {
                     sold.extend(rate_of.iter().filter(|(r, _)| r.cost.unwrap_or(0.0) > 0.0).map(|&(r, v)| (v, -r.cost.unwrap_or(0.0))));
                 }
@@ -976,9 +998,17 @@ pub fn check_plan(
         *made.entry(item.name.as_str()).or_default() -= sold;
         // An item sold for another currency (Aniimo EXP, Aniipods) leaves the balance the same
         // way, but earns nothing towards `currency`.
-        if item.sell_currency == currency {
-            earned += sold * item.sell_value;
-        }
+        earned += sold * item.earns(currency);
+    }
+    let recipes: Vec<&ProductionItem> = plan.recipe_rates.keys().filter_map(|name| all.get(name.as_str()).copied()).collect();
+    let seeds: f64 = plan
+        .recipe_rates
+        .iter()
+        .filter_map(|(name, rate)| all.get(name.as_str())?.season.map(|s| rate * s.seed_cost))
+        .sum();
+    let budget = season_budget_per_second(&recipes);
+    if seeds > budget + TOLERANCE {
+        return Err(format!("season seeds cost {} a day but {} comes in", seeds * 86_400.0, budget * 86_400.0));
     }
     if let Some(level_up) = level_up {
         let pace = plan.pace.ok_or("the plan has no level-up pace")?;
@@ -1142,8 +1172,7 @@ pub fn plan_from_values(
 pub fn currency_rate(exact: &ExactPlan, items: &[ProductionItem], currency: &str) -> f64 {
     items
         .iter()
-        .filter(|item| item.sell_currency == currency)
-        .map(|item| exact.sold.get(&item.name).copied().unwrap_or(0.0) * item.sell_value)
+        .map(|item| exact.sold.get(&item.name).copied().unwrap_or(0.0) * item.earns(currency))
         .sum()
 }
 
@@ -1155,7 +1184,7 @@ pub fn target_items(exact: &ExactPlan, items: &[ProductionItem], target: &str) -
     }
     items
         .iter()
-        .filter(|item| item.sell_currency == target)
+        .filter(|item| item.earns(target) > 0.0)
         .filter_map(|item| exact.sold.get(&item.name).filter(|&&n| n > 1e-9).map(|&n| (item.name.clone(), n)))
         .collect()
 }

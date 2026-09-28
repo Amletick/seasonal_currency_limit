@@ -193,6 +193,27 @@ export const SPECIAL_RECIPES = [
     { name: 'lotion', facility: 'Phonolfactory Table' },
 ];
 
+// The Harvest Moon Festival, from RV 10: season crops' seeds cost Moonray Wheat, which season
+// orders pay out, and every season item sold counts points on top of its coins. Plans take how much
+// wheat the player gets a day rather than tracking the orders. The recipes are in
+// data/harvest_moon_festival.csv.
+export const SEASON = {
+    name: 'Harvest Moon Festival',
+    currency: 'Moonray Wheat',
+    points: 'Harvest Moon Points',
+    minHomeLevel: 10,
+    seedCost: 4,
+    // Crops whose seeds cost Moonray Wheat rather than coins.
+    crops: ['moondew_radish', 'waxing_moon_pepper'],
+    // Recipe Notes unlock these with Moonray Wheat; the season's other recipes come unlocked.
+    recipeNotes: [
+        { name: 'harvest_platter', cost: 120 },
+        { name: 'umbral_pickle', cost: 80 },
+        { name: 'umbral_hot_pot', cost: 80 },
+        { name: 'umbral_sweet_and_spicy_sauce', cost: 80 },
+    ],
+};
+
 // What reaching each RV level costs: coins, plus raw Wood Blocks and Mineral Sand up to RV 6 and
 // one Woodworking Bench item and one Chimney Kiln item from RV 7.
 export const LEVEL_UP_COSTS = {

@@ -94,6 +94,67 @@ pub fn load_unverified(data_dir: &Path) -> Result<Vec<(String, String)>, Box<dyn
     parse_unverified(&std::fs::read_to_string(data_dir.join("unverified.csv"))?)
 }
 
+/// One row of a season's CSV (e.g. `harvest_moon_festival.csv`).
+#[derive(Debug, serde::Deserialize)]
+struct SeasonRow {
+    name: String,
+    facility: String,
+    raw_materials: String,
+    required_amount: String,
+    /// Season currency per batch of seeds, for a season crop.
+    seed_cost: Option<f64>,
+    sell_value: f64,
+    points: f64,
+    /// Grow time, for a crop.
+    production_time: Option<f64>,
+    /// For a recipe an Aniimo works.
+    workload: Option<f64>,
+    #[serde(rename = "yield")]
+    yield_amount: u32,
+    facility_level: u32,
+}
+
+/// Parses a season's recipes (columns `name, facility, raw_materials, required_amount, seed_cost,
+/// sell_value, points, production_time, workload, yield, facility_level`), for a player who gets
+/// `budget_per_day` of the season currency a day for seeds (see [`crate::models::SeasonTerms`]).
+/// Crops are watered like any other; call [`crate::models::apply_watering`] on them.
+pub fn parse_season(csv_text: &str, budget_per_day: f64) -> Result<Vec<ProductionItem>, Box<dyn Error>> {
+    let mut rdr = ReaderBuilder::new().trim(csv::Trim::All).from_reader(csv_text.as_bytes());
+    let mut items = Vec::new();
+    for row in rdr.deserialize::<SeasonRow>() {
+        let row = row?;
+        let raw_materials = parse_raw_materials(&row.raw_materials);
+        let production_time = match (row.workload, row.production_time) {
+            (Some(workload), _) => crate::models::Worker::default().seconds_for(workload, 1, false),
+            (None, Some(time)) => time,
+            (None, None) => return Err(format!("{} has neither a workload nor a grow time", row.name).into()),
+        };
+        items.push(ProductionItem {
+            name: row.name,
+            facility: row.facility,
+            required_amount: (!raw_materials.is_empty()).then(|| parse_required_amounts(&row.required_amount)),
+            raw_materials: (!raw_materials.is_empty()).then_some(raw_materials),
+            cost: None,
+            sell_currency: "coins".to_string(),
+            sell_value: row.sell_value,
+            production_time,
+            yield_amount: row.yield_amount,
+            energy: None,
+            facility_level: row.facility_level,
+            module_requirement: None,
+            workload: row.workload,
+            byproduct: None,
+            environment: None,
+            season: Some(crate::models::SeasonTerms {
+                points: row.points,
+                seed_cost: row.seed_cost.unwrap_or(0.0),
+                budget_per_day,
+            }),
+        });
+    }
+    Ok(items)
+}
+
 /// Parses a module requirement string (e.g., "ecological_module:1") into a tuple.
 ///
 /// Returns `None` if the string is empty or invalid.
@@ -175,6 +236,7 @@ pub fn load_farmland(path: &Path) -> Result<Vec<ProductionItem>, Box<dyn Error>>
             workload: None,
             byproduct: None,
             environment: row.environment,
+            season: None,
         });
     }
     Ok(items)
@@ -228,6 +290,7 @@ pub fn load_woodland(path: &Path) -> Result<Vec<ProductionItem>, Box<dyn Error>>
                 .byproduct_yield
                 .map(|amt| ("Wood Blocks".to_string(), amt)),
             environment: row.environment,
+            season: None,
         });
     }
     Ok(items)
@@ -286,6 +349,7 @@ pub fn load_workload_raw_material(
             workload: Some(row.workload),
             byproduct: byproduct_name.zip(row.byproduct_yield).map(|(name, amt)| (name.to_string(), amt)),
             environment: row.environment,
+            season: None,
         });
     }
     Ok(items)
@@ -358,6 +422,7 @@ pub fn load_processing_with_energy(
             workload: row.workload,
             byproduct: None,
             environment: None,
+            season: None,
         });
     }
     Ok(items)
@@ -413,6 +478,7 @@ pub fn load_processing_no_energy(
             workload: row.workload,
             byproduct: None,
             environment: None,
+            season: None,
         });
     }
     Ok(items)

@@ -232,6 +232,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
             workload: None,
             byproduct: None,
             environment: row.environment,
+            season: None,
         });
     }
 
@@ -262,6 +263,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
                 .byproduct_yield
                 .map(|amt| ("Wood Blocks".to_string(), amt)),
             environment: row.environment,
+            season: None,
         });
     }
 
@@ -289,6 +291,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
                 .byproduct_yield
                 .map(|amt| ("Mineral Sand".to_string(), amt)),
             environment: row.environment,
+            season: None,
         });
     }
 
@@ -321,6 +324,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
                 workload: Some(row.workload),
                 byproduct: None,
                 environment: row.environment,
+                season: None,
             });
         }
     }
@@ -357,6 +361,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
             workload: row.workload,
             byproduct: None,
             environment: None,
+            season: None,
         });
     }
 
@@ -392,6 +397,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
             workload: row.workload,
             byproduct: None,
             environment: None,
+            season: None,
         });
     }
 
@@ -427,6 +433,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
             workload: row.workload,
             byproduct: None,
             environment: None,
+            season: None,
         });
     }
 
@@ -474,6 +481,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
                 workload: row.workload,
                 byproduct: None,
                 environment: None,
+                season: None,
             });
         }
     }
@@ -719,6 +727,14 @@ pub struct JsPlanInput {
     /// before it allow.
     #[serde(default)]
     pub priorities: Vec<String>,
+    /// Whether plans may use the Harvest Moon Festival's recipes. Its points are the priority
+    /// `"season_points"` (see [`crate::models::SEASON_POINTS`]).
+    #[serde(default)]
+    pub season: bool,
+    /// The most Moonray Wheat a day the season's seeds may cost, from what season orders pay;
+    /// `None` for no cap, since orders pay out far more than seeds cost.
+    #[serde(default)]
+    pub season_wheat: Option<f64>,
 }
 
 impl JsPlanInput {
@@ -1121,6 +1137,12 @@ pub struct JsProductionPlan {
     /// What the plan makes of each priority it was asked for, in order.
     #[serde(default)]
     pub priorities: Vec<JsPriority>,
+    /// During the season, its points per second from everything the plan sells.
+    #[serde(default)]
+    pub season_points: Option<f64>,
+    /// During the season, the Moonray Wheat per second its seeds cost.
+    #[serde(default)]
+    pub season_wheat: Option<f64>,
 }
 
 /// What a plan makes of one priority.
@@ -1177,6 +1199,8 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         unverified: vec![],
         level_up: None,
         priorities: vec![],
+        season_points: None,
+        season_wheat: None,
     }
 }
 
@@ -1412,6 +1436,10 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     let plan = crate::exact::to_production_plan(&exact, &prepared.items, &currency, &prepared.facility_counts);
     let mut js = prepared.to_js(plan, Some(proof));
     js.level_up = report;
+    if prepared.input.season {
+        js.season_points = Some(crate::exact::target_rate(&exact, &prepared.items, crate::models::SEASON_POINTS));
+        js.season_wheat = Some(crate::exact::season_seed_spend(&exact, &prepared.items));
+    }
     js.priorities = prepared
         .input
         .priorities
@@ -1504,6 +1532,13 @@ impl PreparedInput {
             crafting_module: input.modules.crafting_module,
         };
         let mut items = get_embedded_items();
+        if input.season {
+            let budget = input.season_wheat.map_or(f64::INFINITY, |wheat| wheat.max(0.0));
+            let mut season = crate::data::parse_season(include_str!("../data/harvest_moon_festival.csv"), budget)
+                .expect("embedded harvest_moon_festival.csv is valid");
+            crate::models::apply_watering(&mut season);
+            items.extend(season);
+        }
         items.retain(|item| !input.exclude.iter().any(|name| name == crate::models::base_item_name(&item.name)));
         let setup = input
             .aniimo
@@ -1576,6 +1611,8 @@ impl PreparedInput {
             unverified,
             level_up: None,
             priorities: vec![],
+            season_points: None,
+            season_wheat: None,
         }
     }
 }
