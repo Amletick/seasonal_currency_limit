@@ -590,7 +590,7 @@ function attachSpecialHandlers() {
     });
 }
 
-// --- Ways to improve -------------------------------------------------------------------
+// --- Opportunities ---------------------------------------------------------------------
 // After each plan, what the player could change to do better, best first: a locked recipe, an
 // Aniimo a level higher, and in Advanced mode a module level or one more facility or facility
 // level. Only changes within reach: Simple mode already has everything its RV level allows, and
@@ -598,7 +598,7 @@ function attachSpecialHandlers() {
 // solved in full in a worker of its own (see `rankImprovements` in worker.js), so planning never
 // waits on it, and it's measured by what the plan leads with (see `rankMeasure`).
 
-let rankWorker = null;
+let rankWorkers = [];
 let rankRunId = 0;
 // Finished rankings by Aniimo setup, for the plan they were worked out from.
 let rankingsBySetup = {};
@@ -614,9 +614,13 @@ const MODULE_NAMES = {
 
 function stopRanking() {
     rankRunId++;
-    if (rankWorker) rankWorker.terminate();
-    rankWorker = null;
+    rankWorkers.forEach(worker => worker.terminate());
+    rankWorkers = [];
 }
+
+// How many workers share the ranking: up to six, leaving cores for the page, the plan's own worker
+// and the layout's.
+const RANK_WORKERS = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 2) - 3));
 
 // What a change is measured by: level-up time for a level-up plan that can be worked toward,
 // else the first ranked priority, else Home Coins.
@@ -783,27 +787,39 @@ function rankImprovementsFor(setup) {
     }
     const runId = rankRunId;
     const current = ranking;
-    rankWorker = new Worker(WORKER_URL, { type: 'module' });
-    rankWorker.onmessage = (event) => {
-        if (runId !== rankRunId) return;
-        const { type, count: result, ok } = event.data;
-        if (type === 'progress') {
-            if (result.index === -1) current.base = result;
-            else current.results[result.index] = result;
-            setStep('improve', 'start', `${current.results.filter(Boolean).length} of ${candidates.length}`);
-        } else {
-            current.done = true;
-            if (ok) rankingsBySetup[setup] = current;
-            setStep('improve', ok ? 'done' : 'fail', `${candidates.length} changes`);
-            rankWorker.terminate();
-            rankWorker = null;
-        }
-        if (ranking === current) renderImprovements();
-    };
-    rankWorker.postMessage({
-        id: 1,
-        type: 'rank_improvements',
-        payload: JSON.stringify({ measure, base, candidates: candidates.map(c => c.input) }),
+    // The candidates dealt out across the workers, each keeping their place in the list.
+    const shares = Array.from({ length: Math.min(RANK_WORKERS, candidates.length) }, () => []);
+    candidates.forEach((candidate, i) => shares[i % shares.length].push(i));
+    let running = shares.length;
+    let failed = false;
+    rankWorkers = shares.map(indices => {
+        const worker = new Worker(WORKER_URL, { type: 'module' });
+        worker.onmessage = (event) => {
+            if (runId !== rankRunId) return;
+            const { type, count: result, ok } = event.data;
+            if (type === 'progress') {
+                if (result.index === -1) current.base ||= result;
+                else current.results[indices[result.index]] = result;
+                setStep('improve', 'start', `${current.results.filter(Boolean).length} of ${candidates.length}`);
+            } else {
+                failed ||= !ok;
+                worker.terminate();
+                if (--running === 0) {
+                    current.done = true;
+                    if (!failed) rankingsBySetup[setup] = current;
+                    setStep('improve', failed ? 'fail' : 'done', `${candidates.length} changes`);
+                    rankWorkers = [];
+                }
+            }
+            if (ranking === current) renderImprovements();
+        };
+        worker.postMessage({
+            id: 1,
+            type: 'rank_improvements',
+            // The plan's own first solve is the plan as it stands, so no worker solves it again.
+            payload: JSON.stringify({ measure, base, candidates: indices.map(i => candidates[i].input), baseTop: plansBySetup[setup]?.measure_top }),
+        });
+        return worker;
     });
 }
 
@@ -1194,7 +1210,7 @@ function homelandSvg(layout, homeLevel) {
 // --- Progress card ---------------------------------------------------------------------
 // Under the button, every step of working out a plan in the order it runs, each with a spinner
 // while it runs and its time once done: the solves in the worker (see `exactPlanJson` in
-// worker.js), then the layout, the ways to improve and the Minimum team.
+// worker.js), then the layout, the opportunities and the Minimum team.
 
 let progress = null;
 
@@ -1206,10 +1222,10 @@ function startProgress(input, runId) {
     // of it against every limit: the worker's steps map onto these (see `setStep`).
     const steps = [
         ...priorities.map(target => ({ key: `priority:${target}`, label: `Most ${priorityLabel(target, planContext.aniipod)}` })),
-        { key: 'plan', label: levelUp ? 'Fastest level-up' : priorities.length ? "Home Coins with what's left" : 'Most Home Coins' },
-        { key: 'layout', label: 'Homeland layout' },
-        { key: 'improve', label: 'Ways to improve' },
-        { key: 'minimum', label: 'Minimum team plan' },
+        { key: 'plan', label: levelUp ? 'Fastest Level-Up' : priorities.length ? "Home Coins with What's Left" : 'Most Home Coins' },
+        { key: 'layout', label: 'Homeland Layout' },
+        { key: 'improve', label: 'Opportunities' },
+        { key: 'minimum', label: 'Minimum Team Plan' },
     ];
     progress = { runId, steps: steps.map(step => ({ ...step, state: 'pending' })) };
     renderProgress();
@@ -3007,7 +3023,7 @@ function updateRateDisplay(pickUnit = false) {
         const label = CURRENCY_LABELS[lastPlan.currency] || lastPlan.currency;
         const points = lastPlan.season_points > 1e-12 ? ` + ${formatRate(lastPlan.season_points * multiplier)} ${SEASON.points}` : '';
         document.getElementById('plan-rate').textContent = `${formatNumber(lastPlan.rate_per_second * multiplier)} ${label}${points}${suffix}`;
-        document.getElementById('rate-label').textContent = 'Your rate';
+        document.getElementById('rate-label').textContent = 'Your Rate';
         rateLine.style.display = '';
         table.innerHTML = '';
         return;
@@ -3033,7 +3049,7 @@ function updateRateDisplay(pickUnit = false) {
             <tbody>${body}</tbody>
         </table>`;
     document.getElementById('priority-rate-head').appendChild(select);
-    document.getElementById('rate-label').textContent = 'Your rates';
+    document.getElementById('rate-label').textContent = 'Your Rates';
     rateLine.style.display = 'none';
 }
 

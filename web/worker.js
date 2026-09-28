@@ -74,8 +74,11 @@ async function solveModel(problem, options = SOLVE_OPTIONS) {
 // Returns the plan's JSON, or throws with the reason it couldn't, so the caller can fall back to
 // `find_plan` and say why. `step(key, state, proven)` reports each solve as it starts and ends,
 // and whether it proved its answer, for the page's progress card: `priority:<target>`,
-// `level_up`, `final`, `stock_up` and `check`.
-async function exactPlanJson(pkg, payload, step = () => {}) {
+// `level_up`, `final`, `stock_up` and `check`. `first(top)` gets the plan's first solve with
+// nothing before it, `{ measure, objective, proven }`: the most of its first priority, its
+// level-up pace, or its Home Coins. The page's Opportunities solve that same model for the plan
+// as it stands, so they take it from here.
+async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
     const { exact_byproduct_problems, exact_priority_problem, exact_level_up_problem, exact_problem, exact_plan } = pkg;
     const stage = { floors: [] };
     let allProven = true;
@@ -89,9 +92,11 @@ async function exactPlanJson(pkg, payload, step = () => {}) {
     // the coin solve after them has to keep all of it up.
     for (const target of JSON.parse(payload).priorities || []) {
         step(`priority:${target}`, 'start');
+        const alone = stage.floors.length === 0;
         const most = await solveModel(JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), target)));
         step(`priority:${target}`, 'done', most?.proven);
         if (!most) throw new Error(`no plan found for the most ${target}`);
+        if (alone) first({ measure: target, objective: most.objective, proven: most.proven });
         allProven &&= most.proven;
         stage.floors.push([target, Math.max(0, most.objective)]);
     }
@@ -103,6 +108,7 @@ async function exactPlanJson(pkg, payload, step = () => {}) {
         const fastest = await solveModel(levelUp);
         step('level_up', 'done', fastest?.proven);
         if (!fastest) throw new Error('no plan found for the level-up');
+        if (stage.floors.length === 0) first({ measure: 'level_up', objective: fastest.objective, proven: fastest.proven });
         if (fastest.objective > 1e-9) {
             allProven &&= fastest.proven;
             stage.pace = fastest.objective;
@@ -114,8 +120,10 @@ async function exactPlanJson(pkg, payload, step = () => {}) {
     let problem = JSON.parse(exact_problem(payload, stageJson));
     if (!problem.lp) throw new Error('this setup isn\'t covered by the exact planner');
     step('final', 'start');
+    const alone = stage.floors.length === 0 && !stage.pace;
     let solved = await solveModel(problem);
     if (!solved) throw new Error('the solver found no plan');
+    if (alone) first({ measure: 'coins', objective: solved.objective, proven: solved.proven });
     let proven = solved.proven && allProven;
     let bound = solved.objective;
     if (!proven) {
@@ -167,7 +175,7 @@ async function exactPlanJson(pkg, payload, step = () => {}) {
 // best `measure` is solved, and where that doesn't move, the most Home Coins while keeping it.
 // Reports one `{ index, top, coins, proven }` per input as it goes, the base first (index -1).
 async function rankImprovements(pkg, payload, report) {
-    const { measure, base, candidates } = JSON.parse(payload);
+    const { measure, base, candidates, baseTop: given } = JSON.parse(payload);
     const topOf = async (input) => {
         const json = JSON.stringify(input);
         const problem = JSON.parse(measure === 'level_up'
@@ -186,7 +194,8 @@ async function rankImprovements(pkg, payload, report) {
         if (!problem.lp) return null;
         return solveModel(problem);
     };
-    const baseTop = await topOf(base);
+    // The plan as it stands was solved just now; the page passes that on when it can.
+    const baseTop = given?.measure === measure ? given : await topOf(base);
     if (!baseTop) {
         report({ index: -1, top: null });
         return;
@@ -233,7 +242,13 @@ self.onmessage = async (event) => {
             // Each solve's start and end go to the page as progress, as `{ step, state }`.
             const step = (key, state, proven) => self.postMessage({ id, type: 'progress', count: { step: key, state, proven } });
             try {
-                result = await exactPlanJson(pkg, payload, step);
+                let top = null;
+                result = await exactPlanJson(pkg, payload, step, found => { top ||= found; });
+                if (top) {
+                    const plan = JSON.parse(result);
+                    plan.measure_top = top;
+                    result = JSON.stringify(plan);
+                }
             } catch (error) {
                 step('backup', 'start');
                 fallbackReason = error && error.message ? error.message : String(error);

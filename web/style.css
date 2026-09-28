@@ -2445,7 +2445,7 @@ tr:hover .skip-row,
     color: var(--text-muted);
 }
 
-/* Ways to improve: one row per change, its gain beside it. */
+/* Opportunities: one row per change, its gain beside it. */
 .improve-list {
     margin: 0.75rem 0 0;
     padding-left: 0;
@@ -2469,7 +2469,7 @@ tr:hover .skip-row,
     color: var(--accent);
 }
 
-/* Ways to improve: everything the ranking tried. */
+/* Opportunities: everything the ranking tried. */
 .improve-checked {
     margin-top: 0.5rem;
 }
