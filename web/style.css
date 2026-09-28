@@ -2470,7 +2470,7 @@ tr:hover .skip-row,
 
 /* Ways to improve: everything the ranking tried. */
 .improve-checked {
-    margin-top: 0.9rem;
+    margin-top: 0.5rem;
 }
 
 .improve-checked-list {

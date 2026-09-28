@@ -873,27 +873,23 @@ function renderImprovements() {
     });
     const rows = [...best.values()].sort((a, b) => b.gain.score - a.gain.score);
     const options = new Set(ranking.candidates.map((c, i) => c.group || `#${i}`)).size;
-    const hint = document.getElementById('improve-hint');
-    if (total === 0) {
-        hint.textContent = `Nothing left to unlock or upgrade.${within}`;
-    } else if (!ranking.done) {
-        hint.textContent = `Checking ${checked} of ${total}…${within}`;
-    } else if (rows.length === 0) {
-        hint.textContent = `No improvements found (${options} checked).${within}`;
-    } else {
-        hint.textContent = `Ranked by ${by}. ${rows.length} of ${options} help.${within}`;
-    }
-    // The list is rebuilt as each result comes in; keep it open if the player opened it.
+    const status = total === 0 ? `Nothing left to unlock or upgrade.${within}`
+        : !ranking.done ? `Checking ${checked} of ${total}…${within}`
+        : rows.length === 0 ? `No improvements found (${options} checked).${within}`
+        : `Ranked by ${by}. ${rows.length} of ${options} help.${within}`;
+    // The status line opens what was checked. The card is rebuilt as each result comes in; keep
+    // the list open if the player opened it.
     const open = !!document.querySelector('#improve-list .improve-checked')?.open;
-    document.getElementById('improve-list').innerHTML = (rows.length
+    document.getElementById('improve-list').innerHTML = improvementsChecked(best, status, open) + (rows.length
         ? `<ol class="improve-list">${rows.map(r => `<li><span class="improve-name">${r.candidate.label}</span><span class="improve-gain">${r.gain.text}</span></li>`).join('')}</ol>`
-        : '') + improvementsChecked(best, open);
+        : '');
 }
 
 // Everything the ranking tries, by kind, each with how it came out: the gain, "no gain", or
-// still to check. A change tried at several levels is one line, e.g. "Earth Aniimo Lv 2–4".
-function improvementsChecked(best, open) {
-    if (!ranking.candidates.length) return '';
+// still to check, behind `status`. A change tried at several levels is one line, e.g. "Earth
+// Aniimo Lv 2–4".
+function improvementsChecked(best, status, open) {
+    if (!ranking.candidates.length) return `<p class="hint">${status}</p>`;
     const groups = new Map();
     ranking.candidates.forEach((candidate, i) => {
         const key = candidate.group || `#${i}`;
@@ -916,7 +912,7 @@ function improvementsChecked(best, open) {
         if (!kinds.has(group.kind)) kinds.set(group.kind, []);
         kinds.get(group.kind).push(`<li><span>${name}</span>${outcome}</li>`);
     }
-    return `<details class="explain improve-checked"${open ? ' open' : ''}><summary>What was checked</summary>${[...kinds]
+    return `<details class="explain improve-checked"${open ? ' open' : ''}><summary>${status}</summary>${[...kinds]
         .map(([kind, items]) => `<p class="assume-title">${kind}</p><ul class="improve-checked-list">${items.join('')}</ul>`)
         .join('')}</details>`;
 }
