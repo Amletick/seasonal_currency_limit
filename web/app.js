@@ -695,11 +695,12 @@ function attachSkipHandlers() {
 let levelUpStock = {};
 
 // The highest ability level an Aniimo reaches, and the abilities that stop short of it; mirrors
-// `MAX_ANIIMO_LEVEL` and `ABILITY_CEILINGS` in models.rs. There is no level-4 Perfumery Aniimo in
-// the game yet.
+// `MAX_ANIIMO_LEVEL` and `ABILITY_DEFAULTS` in models.rs.
 const MAX_ANIIMO_LEVEL = 4;
-const ABILITY_CEILINGS = { Perfumery: 3 };
-const maxLevelFor = ability => ABILITY_CEILINGS[ability] ?? MAX_ANIIMO_LEVEL;
+// Abilities to assume less of unless the player says otherwise: there is no level-4 Perfumery
+// Aniimo in the game yet, so one isn't assumed, but a player who has one can say so.
+const ABILITY_DEFAULTS = { Perfumery: 3 };
+const defaultLevelFor = ability => ABILITY_DEFAULTS[ability] ?? MAX_ANIIMO_LEVEL;
 
 // Which abilities a level matters for: the ones a facility works with, since a crop's grow time
 // is fixed and an environment building's Aniimo level isn't known to change anything. Largest
@@ -727,8 +728,7 @@ function aniimoInput(setup) {
 }
 
 function bestAniimoLevel(ability) {
-    const asked = aniimoLevels[ability] ?? MAX_ANIIMO_LEVEL;
-    return Math.min(asked, maxLevelFor(ability));
+    return aniimoLevels[ability] ?? defaultLevelFor(ability);
 }
 
 // True when every ability the player could have at level 4 is at level 4.
@@ -746,7 +746,7 @@ function facilityWorker(name) {
     const facility = FACILITIES.find(f => f.name === name);
     const said = aniimoByFacility[name] || {};
     return {
-        suitability: Math.min(said.suitability ?? bestAniimoLevel(facility?.ability), maxLevelFor(facility?.ability)),
+        suitability: said.suitability ?? bestAniimoLevel(facility?.ability),
         personality_bonus: (said.personality_bonus ?? true) && !!facility?.personality,
     };
 }
@@ -758,11 +758,17 @@ function selectedSetupTab() {
     return 'best';
 }
 
-// A row of level buttons, one picked, in the same segmented style as the tabs above.
-function levelPicker(group, chosen, ceiling, label) {
+// A row of level buttons, one picked, in the same segmented style as the tabs above. A level the
+// game isn't known to have is marked, and asks before it's taken.
+function levelPicker(group, chosen, ability, label) {
+    const usual = defaultLevelFor(ability);
     return `<span class="tabs level-picker" role="radiogroup" aria-label="${label}">${[1, 2, 3, 4]
-        .filter(level => level <= ceiling)
-        .map(level => `<label><input type="radio" name="${group}" value="${level}"${chosen === level ? ' checked' : ''}> ${level}</label>`)
+        .map(level => {
+            const unheardOf = level > usual;
+            const mark = unheardOf ? ` class="unheard-of" title="No level-${level} ${ability} Aniimo is known in the game yet"` : '';
+            const confirm = unheardOf ? ` data-confirm="${ability}"` : '';
+            return `<label${mark}><input type="radio" name="${group}" value="${level}"${chosen === level ? ' checked' : ''}${confirm}> ${level}</label>`;
+        })
         .join('')}</span>`;
 }
 
@@ -771,9 +777,7 @@ function renderAbilityLevels() {
     const list = document.getElementById('ability-levels');
     if (!list) return;
     list.innerHTML = levelledAbilities().map(ability => {
-        const ceiling = maxLevelFor(ability);
-        const capped = ceiling < MAX_ANIIMO_LEVEL ? `<span class="hint small">tops out at ${ceiling}</span>` : '';
-        return `<div class="ability-level">${abilityTag(ability)}${levelPicker(`level-${ability}`, bestAniimoLevel(ability), ceiling, `${ability} level`)}${capped}</div>`;
+        return `<div class="ability-level">${abilityTag(ability)}${levelPicker(`level-${ability}`, bestAniimoLevel(ability), ability, `${ability} level`)}</div>`;
     }).join('');
 }
 
@@ -787,7 +791,7 @@ function renderFacilityWorkers() {
         const personality = facility.personality
             ? `<label class="chip-toggle" title="The Aniimo on it has ${facility.personality}, for +20% speed"><input type="checkbox" data-personality="${name}"${worker.personality_bonus ? ' checked' : ''}> ${facility.personality}</label>`
             : '<span class="hint small">no personality</span>';
-        return `<div class="facility-worker"><span class="facility-worker-name">${name}</span>${abilityTag(facility.ability)}${levelPicker(`worker-${name}`, worker.suitability, maxLevelFor(facility.ability), `${name} Aniimo level`)}${personality}</div>`;
+        return `<div class="facility-worker"><span class="facility-worker-name">${name}</span>${abilityTag(facility.ability)}${levelPicker(`worker-${name}`, worker.suitability, facility.ability, `${name} Aniimo level`)}${personality}</div>`;
     }).join('');
 }
 
@@ -1629,6 +1633,8 @@ function renderAniimoSummary(plan) {
     if (groups.size === 0) {
         container.innerHTML = '<p class="hint">Nothing in this plan needs an Aniimo.</p>';
         collapsedSummary.textContent = 'No Aniimo needed.';
+        const count = document.getElementById('aniimo-count');
+        if (count) count.hidden = true;
         document.getElementById('aniimo-abilities').innerHTML = '';
         return;
     }
@@ -1693,9 +1699,20 @@ function renderAniimoSummary(plan) {
     } else {
         capNote = `<p class="hint small">That's ${total} Aniimo.</p>`;
     }
-    collapsedSummary.textContent = cap
-        ? `${total} Aniimo · your homeland holds ${cap}${total > cap ? ' (too many; see the list)' : ''}`
-        : `${total} Aniimo`;
+    const have = document.getElementById('aniimo-count-have');
+    const of = document.getElementById('aniimo-count-of');
+    const count = document.getElementById('aniimo-count');
+    if (have && of && count) {
+        have.textContent = total;
+        of.textContent = cap ?? '';
+        of.hidden = !cap;
+        count.hidden = false;
+        count.classList.toggle('over', !!cap && total > cap);
+        count.title = cap
+            ? `${total} Aniimo for this plan; an RV level ${selectedHomeLevel()} homeland holds ${cap}`
+            : `${total} Aniimo for this plan`;
+    }
+    collapsedSummary.textContent = '';
     // How many of each ability the plan needs, in the game's order, like its Abilities screen.
     const needed = new Map(ABILITIES.map(a => [a.name, 0]));
     kept.forEach(g => needed.set(g.ability, (needed.get(g.ability) || 0) + g.count));
@@ -2723,6 +2740,16 @@ document.addEventListener('DOMContentLoaded', () => {
     // on Custom.
     document.getElementById('aniimo-setup-panel').addEventListener('change', event => {
         const { name, value, checked } = event.target;
+        const unheardOf = event.target.dataset?.confirm;
+        if (unheardOf && checked) {
+            const ok = window.confirm(
+                `No level-${value} ${unheardOf} Aniimo is known in the game yet. Plan as though you have one?`
+            );
+            if (!ok) {
+                showAniimoSetup();
+                return;
+            }
+        }
         const personality = event.target.dataset?.personality;
         if (personality) {
             aniimoByFacility[personality] = { ...facilityWorker(personality), personality_bonus: checked };

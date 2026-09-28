@@ -2371,3 +2371,48 @@ tr:hover .skip-row,
     background: color-mix(in srgb, var(--accent, #6aa9ff) 12%, transparent);
     color: var(--text);
 }
+
+/* A `hidden` element stays hidden whatever else its class says about display. */
+[hidden] {
+    display: none !important;
+}
+
+/* How many Aniimo the plan wants, against how many the homeland holds. */
+.aniimo-count {
+    display: flex;
+    align-items: baseline;
+    gap: 0.15rem;
+    margin: 0 0 0 1.05rem;
+    font-size: 1.6rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+}
+
+.aniimo-count-of::before {
+    content: '/';
+    margin: 0 0.25rem 0 0.1rem;
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+.aniimo-count-of {
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.aniimo-count.over {
+    color: var(--danger, #e5484d);
+}
+
+/* A level the game isn't known to have an Aniimo at. */
+.level-picker label.unheard-of {
+    color: color-mix(in srgb, var(--text-muted) 70%, transparent);
+}
+
+.level-picker label.unheard-of::after {
+    content: '*';
+    font-size: 0.7em;
+    vertical-align: super;
+}

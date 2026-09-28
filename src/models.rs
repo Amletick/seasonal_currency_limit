@@ -150,14 +150,14 @@ pub fn efficiency(level: u32, required: u32, gathering: bool) -> f64 {
 /// The highest ability level an Aniimo reaches.
 pub const MAX_ANIIMO_LEVEL: u32 = 4;
 
-/// Abilities that stop short of [`MAX_ANIIMO_LEVEL`]. There is no level-4 Perfumery Aniimo in
-/// the game yet, so a plan that put one on the Phonolfactory Table would be promising a speed
-/// nobody can reach.
-const ABILITY_CEILINGS: &[(&str, u32)] = &[("Perfumery", 3)];
+/// Abilities to assume less than [`MAX_ANIIMO_LEVEL`] of unless the player says otherwise. There
+/// is no level-4 Perfumery Aniimo in the game yet, so planning for one would promise a speed
+/// nobody can reach; a player who has one anyway can still say so.
+const ABILITY_DEFAULTS: &[(&str, u32)] = &[("Perfumery", 3)];
 
-/// The highest level an Aniimo of `ability` reaches (see [`ABILITY_CEILINGS`]).
-pub fn max_level_for(ability: &str) -> u32 {
-    ABILITY_CEILINGS
+/// The level to assume of `ability` when the player hasn't said (see [`ABILITY_DEFAULTS`]).
+pub fn default_level_for(ability: &str) -> u32 {
+    ABILITY_DEFAULTS
         .iter()
         .find(|(name, _)| *name == ability)
         .map_or(MAX_ANIIMO_LEVEL, |(_, level)| *level)
@@ -432,12 +432,18 @@ impl AniimoLevels {
     /// levels.by_ability.insert("Leisure".to_string(), 3);
     /// assert_eq!(levels.level_for("Earth"), 4);
     /// assert_eq!(levels.level_for("Leisure"), 3);
-    /// // No level-4 Perfumery Aniimo exists, whatever a player says.
+    /// // No level-4 Perfumery Aniimo exists yet, so one isn't assumed...
     /// assert_eq!(levels.level_for("Perfumery"), 3);
+    /// // ...but a player who has one can say so.
+    /// levels.by_ability.insert("Perfumery".to_string(), 4);
+    /// assert_eq!(levels.level_for("Perfumery"), 4);
     /// ```
     pub fn level_for(&self, ability: &str) -> u32 {
-        let asked = self.by_ability.get(ability).copied().unwrap_or(self.default);
-        asked.min(max_level_for(ability)).max(1)
+        self.by_ability
+            .get(ability)
+            .copied()
+            .unwrap_or_else(|| self.default.min(default_level_for(ability)))
+            .clamp(1, MAX_ANIIMO_LEVEL)
     }
 }
 
@@ -506,7 +512,10 @@ impl AniimoRequirements {
             // A facility with no personality of its own never gets the bonus, whatever is said.
             AniimoSetup::PerFacility(workers) => {
                 let worker = workers.get(facility);
-                Worker::new(worker.suitability, worker.personality_bonus && has_personality_bonus(facility))
+                Worker::new(
+                    worker.suitability.clamp(1, MAX_ANIIMO_LEVEL),
+                    worker.personality_bonus && has_personality_bonus(facility),
+                )
             }
             AniimoSetup::Minimum => Worker::new(self.get(item).map_or(1, |(_, level)| level), false),
         }

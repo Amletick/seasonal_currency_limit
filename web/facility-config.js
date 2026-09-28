@@ -224,6 +224,40 @@ export const LEVEL_UP_CHAINS = [
     ['mineral_sand', 'coarse_sifted_ore', 'sintered_ore_brick', 'refined_ore', 'microcrystalline_ore_plate'],
 ];
 
+// How much ground each facility takes, in tiles, measured in game. Not all are square, and
+// several sit on half tiles: the Blazing Stove snaps to a gridline of its own. The Storage Unit
+// is here too, since a layout has to place it even though it produces nothing. Unknown means it
+// hasn't been measured yet.
+export const FACILITY_FOOTPRINTS = {
+    'Farmland': [2, 2],
+    'Woodland': [4, 4],
+    'Mine': [5, 5],
+    'Well': [2, 2],
+    'Tidewhisper Sandcastle': [5, 5],
+    'Dewy House': [2, 2],
+    'Nimbus Bed': [5, 5],
+    'Starfall Hammock': null,
+    'Floral Windmill': null,
+    'Heat Furnace': [1, 1],
+    'Cooling Unit': [2, 2],
+    'Sunlamp': [1, 1],
+    'Carousel Mill': [5.5, 5.5],
+    'Crafting Table': [4, 4],
+    'Claw Game Cooker': [3.5, 3.5],
+    'Simmering Pot': [1.5, 1.5],
+    'Phonolfactory Table': [3.5, 3.5],
+    'Bouncy Brew Keg': [3, 3],
+    'Blazing Stove': [2.5, 1.75],
+    'Pickling Jar': [2.5, 2],
+    'Jukebox Dryer': [2.5, 2.5],
+    'Joy Wheel Loom': [4, 4],
+    'Woodworking Bench': [2, 1.5],
+    'Chimney Kiln': [5.5, 5.5],
+    'Dance Pad Polisher': null,
+    'Aniipod Maker': null,
+    'Storage Unit': [2, 2],
+};
+
 // An Aniimo carries four personalities at once, one from each of these opposed pairs, which the
 // game shows as four letters over its portrait: INFP, ISFJ, ESTJ and so on. So one Aniimo can
 // hold the bonus for up to four facilities, and can never hold it for two that want opposite
