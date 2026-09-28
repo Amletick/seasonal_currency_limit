@@ -95,6 +95,7 @@ async function solveModel(problem, options = SOLVE_OPTIONS) {
     if (!proven && result.Status !== 'Time limit reached') return null;
     const values = Array.from({ length: problem.variables }, (_, i) => result.Columns['x' + i]?.Primal ?? 0);
     stats.combinationsLog10 = combinationsLog10(problem.lp);
+    stats.proven = proven;
     return { values, proven, objective: result.ObjectiveValue, stats };
 }
 
@@ -225,7 +226,7 @@ async function rankImprovements(pkg, payload, report) {
         return;
     }
     let baseCoins;
-    report({ index: -1, top: baseTop.objective, proven: baseTop.proven, nodes: baseTop.stats.nodes });
+    report({ index: -1, top: baseTop.objective, proven: baseTop.proven, stats: [baseTop.stats] });
     for (const [index, input] of candidates.entries()) {
         const top = await topOf(input);
         if (!top) {
@@ -234,7 +235,7 @@ async function rankImprovements(pkg, payload, report) {
         }
         let coins = null;
         let proven = top.proven;
-        let nodes = top.stats.nodes;
+        const stats = [top.stats];
         // Only when the measure itself doesn't move does the Home Coins tiebreak matter.
         if (measure !== 'coins' && top.objective <= baseTop.objective * (1 + RANK_MIN_GAIN)) {
             if (baseCoins === undefined) baseCoins = await coinsAt(base, baseTop.objective);
@@ -243,9 +244,9 @@ async function rankImprovements(pkg, payload, report) {
                 coins = { base: baseCoins.objective, value: candidateCoins.objective };
                 proven &&= baseCoins.proven && candidateCoins.proven;
             }
-            nodes += candidateCoins?.stats.nodes || 0;
+            if (candidateCoins) stats.push(candidateCoins.stats);
         }
-        report({ index, top: top.objective, coins, proven, nodes });
+        report({ index, top: top.objective, coins, proven, stats });
     }
 }
 

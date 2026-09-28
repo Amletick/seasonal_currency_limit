@@ -790,12 +790,12 @@ function rankImprovementsFor(setup) {
         if (type === 'progress') {
             if (result.index === -1) current.base = result;
             else current.results[result.index] = result;
-            current.explored = (current.explored || 0) + (result.nodes || 0);
-            setStep('improve', 'start', `${current.results.filter(Boolean).length} of ${candidates.length}`, { nodes: current.explored });
+            current.solves = [...(current.solves || []), ...(result.stats || [])];
+            setStep('improve', 'start', `${current.results.filter(Boolean).length} of ${candidates.length}`, combineStats(current.solves));
         } else {
             current.done = true;
             if (ok) rankingsBySetup[setup] = current;
-            setStep('improve', ok ? 'done' : 'fail', `${candidates.length} checked`, { nodes: current.explored });
+            setStep('improve', ok ? 'done' : 'fail', `${candidates.length} changes`, combineStats(current.solves || []));
             rankWorker.terminate();
             rankWorker = null;
         }
@@ -1246,13 +1246,26 @@ function setStep(key, state, detail, stats) {
 // "10^4,412", with the power raised.
 const powerOfTen = log10 => `10<sup>${formatNumber(Math.max(0, Math.round(log10)))}</sup>`;
 
-// What a solve's search came to: the combinations it chose from, and how many it explored.
-function searchLine(stats) {
-    if (!stats) return '';
-    return [
-        stats.combinationsLog10 > 0 ? `${powerOfTen(stats.combinationsLog10)} combinations` : '',
-        stats.nodes ? `${formatNumber(stats.nodes)} explored` : '',
-    ].filter(Boolean).join(' · ');
+// Several solves' stats as one: their combinations added up (as a power of ten), the partial
+// plans they explored, and proven only if every one was.
+function combineStats(list) {
+    const logs = list.map(s => s.combinationsLog10 || 0).filter(l => l > 0);
+    const top = Math.max(0, ...logs);
+    return {
+        combinationsLog10: logs.length ? top + Math.log10(logs.reduce((sum, l) => sum + 10 ** (l - top), 0)) : 0,
+        nodes: list.reduce((sum, s) => sum + (s.nodes || 0), 0),
+        proven: list.every(s => s.proven !== false),
+    };
+}
+
+// How many combinations a solve checked. A proven solve checked them all: it explores a few
+// partial plans and rules out the rest by their bounds, so the plan it gives is the best of
+// every one. One that ran out of time says so.
+function searchNote(stats) {
+    if (!stats?.combinationsLog10) return '';
+    return stats.proven === false
+        ? `${powerOfTen(stats.combinationsLog10)} combinations, out of time`
+        : `${powerOfTen(stats.combinationsLog10)} combinations checked`;
 }
 
 // Once the plan is back, any solve that never ran (a level-up out of reach skips the last one;
@@ -1280,25 +1293,20 @@ function renderProgress() {
         skipped: '<span class="step-icon skipped" aria-label="Skipped">–</span>',
     }[state] || '<span class="step-icon pending" aria-label="Waiting">•</span>');
     const time = ms => ms == null ? '' : ms < 1000 ? `${Math.max(1, Math.round(ms))} ms` : `${(ms / 1000).toFixed(1)} s`;
-    const solves = progress.steps.filter(s => s.stats?.decisions);
-    const sum = field => progress.steps.reduce((total, s) => total + (s.stats?.[field] || 0), 0);
-    const largest = Math.max(0, ...solves.map(s => s.stats.combinationsLog10 || 0));
+    const all = combineStats(progress.steps.filter(s => s.stats && s.state === 'done').map(s => s.stats));
     const spots = progress.steps.find(s => s.key === 'layout')?.spots;
-    const totals = [
-        largest > 0 ? `${powerOfTen(largest)} combinations` : '',
-        sum('nodes') ? `${formatNumber(sum('nodes'))} explored` : '',
-        spots ? `${formatNumber(spots)} layout spots` : '',
-    ].filter(Boolean).join(' · ');
+    const totals = [searchNote(all), spots ? `${formatNumber(spots)} layout spots` : ''].filter(Boolean).join(' · ');
     const open = !!card.querySelector('.progress-total')?.open;
     card.innerHTML = `<ol class="progress-steps">${progress.steps.map(step => {
-        const line = step.state === 'done' ? searchLine(step.stats) : '';
+        const finished = step.state === 'done' || step.state === 'fail';
+        const note = [step.detail, finished ? searchNote(step.stats) : '', finished ? time(step.ms) : ''].filter(Boolean).join(' · ');
+        const explored = finished && step.stats?.nodes ? ` title="${formatNumber(step.stats.nodes)} partial plans explored; the rest ruled out by their bounds"` : '';
         return `
         <li class="progress-step ${step.state}">${icon(step.state)}<span class="step-label">${step.label}</span>
-            <span class="step-note">${[step.detail, step.state === 'done' || step.state === 'fail' ? time(step.ms) : ''].filter(Boolean).join(' · ')}</span>
-            ${line ? `<span class="step-search">${line}</span>` : ''}</li>`;
+            <span class="step-note"${explored}>${note}</span></li>`;
     }).join('')}</ol>
         ${totals ? `<details class="progress-total"${open ? ' open' : ''}><summary>In all: ${totals}</summary>
-            <p>Combinations: every way to set how many of each facility make what. The solver explores a few partial plans and rules out the rest without visiting them.</p></details>` : ''}`;
+            <p>A combination is one way to set how many of each facility make what. The solver explores a few thousand and rules out the rest by their bounds, so its plan is the best of all of them.</p></details>` : ''}`;
 }
 
 // --- Season ----------------------------------------------------------------------------

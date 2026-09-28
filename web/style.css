@@ -2632,13 +2632,6 @@ tr:hover .skip-row,
     stroke-width: 0.12;
 }
 
-.step-search {
-    grid-column: 2 / -1;
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    margin-top: -0.2rem;
-}
-
 .progress-total summary {
     cursor: pointer;
 }
