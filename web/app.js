@@ -677,33 +677,41 @@ function improvementCandidates(base, setup) {
     }
 
     // An Aniimo a level higher, up to the highest level the game is known to have.
+    // Every level above the one given is tried, here and below, since one level can gain nothing
+    // while the next gains a lot.
+    const levelsAbove = (from, to) => Array.from({ length: Math.max(0, to - from) }, (_, i) => from + 1 + i);
+
+    // An Aniimo at a higher level, up to the highest the game is known to have.
     if (setup.startsWith('best')) {
         const abilities = new Set(FACILITIES.filter(f => f.ability && owns(f.name)).map(f => f.ability));
         for (const ability of levelledAbilities().filter(a => abilities.has(a))) {
             const level = base.aniimo_levels[ability] ?? defaultLevelFor(ability);
-            if (level >= defaultLevelFor(ability)) continue;
-            candidates.push({
-                label: `${ability} Aniimo Lv ${level + 1}`,
-                input: { ...base, aniimo_levels: { ...base.aniimo_levels, [ability]: level + 1 } },
-            });
+            for (const next of levelsAbove(level, defaultLevelFor(ability))) {
+                candidates.push({
+                    group: `aniimo:${ability}`,
+                    label: `${ability} Aniimo Lv ${next}`,
+                    input: { ...base, aniimo_levels: { ...base.aniimo_levels, [ability]: next } },
+                });
+            }
         }
     } else if (setup.startsWith('custom')) {
         for (const [name, worker] of Object.entries(base.workers)) {
             const ability = FACILITIES.find(f => f.name === name)?.ability;
-            if (!ability || !owns(name) || worker.suitability >= defaultLevelFor(ability)) continue;
-            candidates.push({
-                label: `${name} Aniimo Lv ${worker.suitability + 1}`,
-                input: { ...base, workers: { ...base.workers, [name]: { ...worker, suitability: worker.suitability + 1 } } },
-            });
+            if (!ability || !owns(name)) continue;
+            for (const next of levelsAbove(worker.suitability, defaultLevelFor(ability))) {
+                candidates.push({
+                    group: `worker:${name}`,
+                    label: `${name} Aniimo Lv ${next}`,
+                    input: { ...base, workers: { ...base.workers, [name]: { ...worker, suitability: next } } },
+                });
+            }
         }
     }
 
     // Advanced mode: a module at a higher level, one more facility, or one facility at a higher
-    // level, within what the RV level covering the rest allows. Every level is tried, since a
-    // level can unlock nothing on its own while the one after it unlocks a lot.
+    // level, within what the RV level covering the rest allows.
     if (!isSimpleMode()) {
         const allowed = simpleSetup(homeLevelCovering(base));
-        const levelsAbove = (from, to) => Array.from({ length: Math.max(0, to - from) }, (_, i) => from + 1 + i);
         for (const [module, level] of Object.entries(base.modules)) {
             for (const next of levelsAbove(level, allowed.modules[module] ?? 0)) {
                 candidates.push({
