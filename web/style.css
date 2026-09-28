@@ -2612,7 +2612,7 @@ tr:hover .skip-row,
 .layout-plot.locked rect {
     fill: url(#layout-locked);
     stroke: #ef4444;
-    stroke-opacity: 0.8;
+    stroke-opacity: 1;
 }
 
 .layout-svg .layout-plot.locked text {

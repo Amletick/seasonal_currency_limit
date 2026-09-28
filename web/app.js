@@ -1141,7 +1141,8 @@ function homelandSvg(layout, homeLevel) {
     const minY = whole ? -1 : Math.floor(Math.min(...placed.map(r => r.y))) - 2;
     const maxX = whole ? Math.max(...plots.map(p => p.x + p.w)) + 1 : Math.ceil(Math.max(...placed.map(r => r.x + r.w))) + 2;
     const maxY = whole ? Math.max(...plots.map(p => p.y + p.h)) + 1 : Math.ceil(Math.max(...placed.map(r => r.y + r.h))) + 2;
-    const plotShapes = plots.map(p => {
+    // Locked plots last, so where one meets an open plot, the edge between them reads red.
+    const plotShapes = [...plots].sort((a, b) => (b.number <= homeLevel) - (a.number <= homeLevel)).map(p => {
         const open = p.number <= homeLevel;
         // An open plot is named by its number; one still to come by the RV level that opens it.
         return `<g class="layout-plot${open ? '' : ' locked'}"><rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" />
