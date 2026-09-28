@@ -2488,3 +2488,33 @@ tr:hover .skip-row,
     justify-content: space-between;
     gap: 0.2rem 1rem;
 }
+
+/* Homeland layout. */
+.layout-diagram {
+    margin-top: 0.75rem;
+    overflow: auto;
+}
+
+.layout-svg {
+    width: 100%;
+    max-height: 80vh;
+    display: block;
+}
+
+.layout-svg text {
+    text-anchor: middle;
+    dominant-baseline: central;
+    fill: var(--text);
+    font-weight: 600;
+    pointer-events: none;
+}
+
+.layout-storage {
+    fill: var(--accent);
+    stroke: var(--text);
+    stroke-width: 0.08;
+}
+
+.layout-svg .layout-storage-text {
+    fill: var(--bg, #111);
+}

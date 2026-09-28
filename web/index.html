@@ -259,6 +259,16 @@
                         <div id="facility-plan-container" class="facilities-container"></div>
                     </div>
 
+                    <div class="card production-steps" id="layout-card" style="display: none;">
+                        <h2>Homeland layout</h2>
+                        <p class="hint" id="layout-summary"></p>
+                        <details class="explain">
+                            <summary>How it's laid out</summary>
+                            <p>Every finished batch is carried to the Storage Unit (SU), so each facility is placed by its trips per hour times its straight-line distance to it: the busiest sit closest, idle ones go to the edge. Environment buildings keep the plots they cover exactly as planned and move as one block. Buildings may touch, and anything may be turned. Hover a facility for its trips and distance. This is a close-packed arrangement worked out step by step, not a proven shortest one.</p>
+                        </details>
+                        <div class="layout-diagram" id="layout-diagram"></div>
+                    </div>
+
                     <div class="card production-steps" id="goal-section">
                         <h2>Set a goal</h2>
                         <p class="hint">Updates instantly from the plan above.</p>

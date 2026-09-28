@@ -1,7 +1,8 @@
 // Aniimax Web Application
 
+import { layOut } from './layout.js';
 import {
-    FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME,
+    FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS,
     MAX_HOME_LEVEL, ANIIMO_MAX, simpleSetup,
     LEVEL_UP_COSTS, LEVEL_UP_CHAINS, SPECIAL_RECIPES, SEASON, ANIIPOD_TIERS, personalityLetter, opposedPersonality,
 } from './facility-config.js';
@@ -915,6 +916,177 @@ function improvementsChecked(best, status, open) {
     return `<details class="explain improve-checked"${open ? ' open' : ''}><summary>${status}</summary>${[...kinds]
         .map(([kind, items]) => `<p class="assume-title">${kind}</p><ul class="improve-checked-list">${items.join('')}</ul>`)
         .join('')}</details>`;
+}
+
+// --- Homeland layout -------------------------------------------------------------------
+// The whole homeland around one Storage Unit (see layout.js): each finished batch is carried
+// there, so the busiest facilities sit closest. Environment buildings keep the plots they cover
+// exactly as planned, moving as one block. Facilities with no known size are left out and named.
+
+// Trips per hour for each unit of a plan row: one per finished batch.
+function tripsPerUnit(step) {
+    if (step.status !== 'producing' || !step.cycle_time || !step.facility_count) return 0;
+    const busy = step.busy_units ?? step.facility_count;
+    return (busy / step.cycle_time / step.facility_count) * 3600;
+}
+
+// The plan as pieces for `layOut`: environment blocks, then one piece per other facility unit,
+// then whatever the player owns that the plan doesn't use.
+function homelandPieces(plan, input) {
+    const pieces = [];
+    const placed = {};
+    const count = (facility, n = 1) => { placed[facility] = (placed[facility] || 0) + n; };
+    const unplaced = new Set();
+    const steps = (plan.coin_items || []).filter(s => s.facility);
+    const envSteps = steps.filter(s => s.environment && s.status === 'producing');
+    const assignments = plan.environment_assignments || [];
+
+    // Environment blocks, grouped as the plan's own maps are (see `renderFacilityPlan`).
+    const units = [];
+    ENVIRONMENT_MODE_ORDER.forEach(mode => {
+        const rows = envSteps.filter(s => s.environment === mode);
+        if (rows.length) splitByEnvironmentUnit(rows, assignments.filter(a => a.mode === mode)).forEach(unit => units.push({ mode, unit }));
+    });
+    const blocks = new Map();
+    units.forEach(({ mode, unit }, i) => {
+        const key = unit.partner ? `${unit.building}|${unit.partner.join(',')}|${i}` : `#${i}`;
+        // A pair's zones are one place: gather them under the first zone that names the pair.
+        const pairKey = unit.partner ? [...blocks.keys()].find(k => k.startsWith(`${unit.building}|${unit.partner.join(',')}|`) && !blocks.get(k).zones.includes(unit.zone)) : null;
+        const block = blocks.get(pairKey) || { mode, unit, layouts: [], rows: [], zones: [] };
+        block.layouts.push(...unit.layout);
+        block.rows.push(...unit.rows);
+        block.zones.push(unit.zone);
+        blocks.set(pairKey || key, block);
+    });
+    const placedInBlocks = {};
+    blocks.forEach(({ mode, unit, layouts, rows }) => {
+        const size = environmentBuildingSize(unit.building);
+        const members = [{ x: 0, y: 0, w: size, h: size, weight: 0, facility: unit.building, mode: unit.pairModes ? unit.pairModes[0] : mode, building: true }];
+        count(unit.building);
+        if (unit.partner) {
+            const partnerSize = environmentBuildingSize(unit.partner[0]);
+            members.push({ x: unit.partner[1], y: unit.partner[2], w: partnerSize, h: partnerSize, weight: 0, facility: unit.partner[0], mode: unit.pairModes ? unit.pairModes[1] : mode, building: true });
+            count(unit.partner[0]);
+        }
+        // Each plot gets one of the crops planned for its facility here, busiest first.
+        const crops = {};
+        rows.forEach(r => {
+            for (let n = 0; n < r.facility_count; n++) (crops[r.facility] ||= []).push({ crop: r.item_name, trips: tripsPerUnit(r) });
+        });
+        Object.values(crops).forEach(list => list.sort((a, b) => b.trips - a.trips));
+        layouts.forEach(p => {
+            const crop = (crops[p.facility] || []).shift() || { crop: null, trips: 0 };
+            members.push({ x: p.x, y: p.y, w: p.size, h: p.size, weight: crop.trips, facility: p.facility, crop: crop.crop });
+            count(p.facility);
+            placedInBlocks[`${p.facility}|${crop.crop}`] = (placedInBlocks[`${p.facility}|${crop.crop}`] || 0) + 1;
+        });
+        pieces.push({ members });
+    });
+
+    // Everything else, one unit at a time; environment crops no map took count here too.
+    steps.forEach(step => {
+        let n = step.facility_count;
+        if (step.environment && step.status === 'producing') {
+            const key = `${step.facility}|${step.item_name}`;
+            const taken = Math.min(n, placedInBlocks[key] || 0);
+            placedInBlocks[key] = (placedInBlocks[key] || 0) - taken;
+            n -= taken;
+        }
+        const footprint = FACILITY_FOOTPRINTS[step.facility];
+        if (!footprint) {
+            if (n > 0) unplaced.add(step.facility);
+            return;
+        }
+        for (let i = 0; i < n; i++) {
+            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: tripsPerUnit(step), facility: step.facility, crop: step.status === 'producing' ? step.item_name : null }] });
+        }
+        count(step.facility, n);
+    });
+
+    // What's owned but not in the plan at all, such as environment buildings it didn't need.
+    FACILITIES.forEach(f => {
+        const owned = tierCount(input.facilities[f.name]);
+        const extra = owned - (placed[f.name] || 0);
+        if (extra <= 0) return;
+        const footprint = f.name in ENVIRONMENT_BUILDING_SIZES
+            ? [environmentBuildingSize(f.name), environmentBuildingSize(f.name)]
+            : FACILITY_FOOTPRINTS[f.name];
+        if (!footprint) {
+            unplaced.add(f.name);
+            return;
+        }
+        for (let i = 0; i < extra; i++) pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: 0, facility: f.name, crop: null }] });
+    });
+    return { pieces, unplaced: [...unplaced] };
+}
+
+// Colors for the layout: crops and Aniimo materials as in the environment maps, the rest by
+// category.
+const LAYOUT_CATEGORY_COLORS = {
+    'Materials': '#8d8f5a',
+    'Aniimo Materials': '#5c9bd6',
+    'Materials Processing': '#8a7fc4',
+    'Environment': '#9aa0a8',
+};
+const layoutColor = m => m.building
+    ? (ENVIRONMENT_MODE_COLORS[m.mode] || '#9aa0a8')
+    : ENVIRONMENT_FACILITY_COLORS[m.facility] || LAYOUT_CATEGORY_COLORS[FACILITY_CATEGORY_BY_NAME.get(m.facility)] || '#888888';
+const initialsOf = name => name.split(/[\s-]+/).map(w => w[0]).join('').toUpperCase();
+
+let layoutRunId = 0;
+
+function renderHomelandLayout(plan) {
+    const card = document.getElementById('layout-card');
+    if (!plan?.success || !lastPlanInput) {
+        card.style.display = 'none';
+        return;
+    }
+    const runId = ++layoutRunId;
+    card.style.display = 'block';
+    document.getElementById('layout-summary').textContent = 'Laying out…';
+    document.getElementById('layout-diagram').innerHTML = '';
+    // Placed after the plan has painted: a large homeland takes a moment.
+    setTimeout(() => {
+        if (runId !== layoutRunId) return;
+        const { pieces, unplaced } = homelandPieces(plan, lastPlanInput);
+        const layout = layOut(pieces);
+        const members = layout.pieces.flatMap(p => p.members);
+        const trips = members.reduce((sum, m) => sum + m.weight, 0);
+        const walked = members.reduce((sum, m) => sum + m.weight * Math.hypot(m.x + m.w / 2, m.y + m.h / 2), 0);
+        const missing = unplaced.length ? ` Not placed, size unknown: ${unplaced.join(', ')}.` : '';
+        document.getElementById('layout-summary').textContent = trips > 0
+            ? `${formatNumber(Math.round(trips))} trips/hour to the Storage Unit, ${(walked / trips).toFixed(1)} tiles each on average.${missing}`
+            : `Nothing in this plan is carried to the Storage Unit.${missing}`;
+        document.getElementById('layout-diagram').innerHTML = homelandSvg(layout);
+    }, 0);
+}
+
+function homelandSvg(layout) {
+    const rects = [layout.storage, ...layout.pieces.flatMap(p => p.members)];
+    const minX = Math.floor(Math.min(...rects.map(r => r.x))) - 1;
+    const minY = Math.floor(Math.min(...rects.map(r => r.y))) - 1;
+    const maxX = Math.ceil(Math.max(...rects.map(r => r.x + r.w))) + 1;
+    const maxY = Math.ceil(Math.max(...rects.map(r => r.y + r.h))) + 1;
+    const lines = [];
+    for (let x = minX; x <= maxX; x++) lines.push(`<line x1="${x}" y1="${minY}" x2="${x}" y2="${maxY}" />`);
+    for (let y = minY; y <= maxY; y++) lines.push(`<line x1="${minX}" y1="${y}" x2="${maxX}" y2="${y}" />`);
+    const maxTrips = Math.max(...layout.pieces.flatMap(p => p.members.map(m => m.weight)), 1e-9);
+    const shapes = layout.pieces.flatMap(p => p.members).map(m => {
+        const color = layoutColor(m);
+        const tip = `${m.facility}${m.crop ? `: ${prettyItem(m.crop)}` : m.building ? ` (${m.mode})` : ' (idle)'}${m.weight > 0 ? `, ${formatRate(m.weight)} trips/hour, ${Math.hypot(m.x + m.w / 2, m.y + m.h / 2).toFixed(1)} tiles away` : ''}`;
+        const label = Math.min(m.w, m.h) >= 1.5 ? `<text x="${m.x + m.w / 2}" y="${m.y + m.h / 2}" font-size="${Math.min(0.8, m.w / 3)}">${initialsOf(m.facility)}</text>` : '';
+        // Busier pieces are filled more solidly; idle ones are an outline.
+        const fill = m.building ? 0.9 : m.weight > 0 ? 0.35 + 0.55 * Math.sqrt(m.weight / maxTrips) : 0.08;
+        return `<g><title>${tip}</title><rect x="${m.x + 0.04}" y="${m.y + 0.04}" width="${m.w - 0.08}" height="${m.h - 0.08}" rx="0.2"
+            fill="${color}" fill-opacity="${fill.toFixed(2)}" stroke="${color}" stroke-width="0.06" />${label}</g>`;
+    }).join('');
+    const s = layout.storage;
+    return `<svg class="layout-svg" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}" role="img" aria-label="Homeland layout">
+        <g class="env-grid">${lines.join('')}</g>
+        ${shapes}
+        <g><title>Storage Unit</title><rect x="${s.x + 0.04}" y="${s.y + 0.04}" width="${s.w - 0.08}" height="${s.h - 0.08}" rx="0.2" class="layout-storage" />
+        <text x="0" y="0" font-size="0.8" class="layout-storage-text">SU</text></g>
+    </svg>`;
 }
 
 // --- Season ----------------------------------------------------------------------------
@@ -2722,6 +2894,7 @@ function displayPlan(plan, scroll = true) {
 
     updateRateDisplay(!rateUnitChosen);
     renderGoalTargets(plan);
+    renderHomelandLayout(plan);
 
     // Said only when the plan might not be the best: the solver ran out of time, or the backup
     // planner made it.
