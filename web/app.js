@@ -170,7 +170,14 @@ function showSelectedPlan(scroll) {
     pending.style.display = 'none';
     lastPlan = plan;
     displayPlan(plan, scroll);
-    if (plan.success) runTimeToGoal();
+    if (plan.success) {
+        runTimeToGoal();
+        rankImprovementsFor(setup);
+    } else {
+        stopRanking();
+        ranking = null;
+        renderImprovements();
+    }
 }
 
 // The most recently computed goal result, held the same way as `lastPlan` so switching the rate
@@ -581,6 +588,284 @@ function attachSpecialHandlers() {
         renderRecipeCount();
         saveInputsToStorage();
     });
+}
+
+// --- Ways to improve -------------------------------------------------------------------
+// After each plan, what the player could change to do better, best first: a locked recipe, an
+// Aniimo a level higher, and in Advanced mode a module level or one more facility or facility
+// level. Only changes within reach: Simple mode already has everything its RV level allows, and
+// Advanced mode goes up to the lowest RV level that allows everything entered. Each change is
+// solved in full in a worker of its own (see `rankImprovements` in worker.js), so planning never
+// waits on it, and it's measured by what the plan leads with (see `rankMeasure`).
+
+let rankWorker = null;
+let rankRunId = 0;
+// Finished rankings by Aniimo setup, for the plan they were worked out from.
+let rankingsBySetup = {};
+// The ranking on screen: `{ setup, measure, homeLevel, candidates, base, results, done }`.
+let ranking = null;
+
+const MODULE_NAMES = {
+    ecological_module: 'Ecological Module',
+    kitchen_module: 'Kitchen Module',
+    resource_detector: 'Resource Detector',
+    crafting_module: 'Crafting Module',
+};
+
+function stopRanking() {
+    rankRunId++;
+    if (rankWorker) rankWorker.terminate();
+    rankWorker = null;
+}
+
+// What a change is measured by: level-up time for a level-up plan that can be worked toward,
+// else the first ranked priority, else Home Coins.
+function rankMeasure() {
+    if (planContext?.levelUp && !planContext.unavailable && !planContext.ready) return 'level_up';
+    return (lastPlanInput?.priorities || [])[0] || 'coins';
+}
+
+// How many of a facility `tiers` hold, and the highest level among them.
+const tierCount = tiers => (tiers || []).reduce((sum, t) => sum + t.count, 0);
+const tierLevel = tiers => Math.max(0, ...(tiers || []).filter(t => t.count > 0).map(t => t.level));
+
+// The lowest RV level whose facilities and modules cover everything in `input`, for Advanced
+// mode, where the player enters what they have rather than their RV level.
+function homeLevelCovering(input) {
+    for (let level = 1; level <= MAX_HOME_LEVEL; level++) {
+        const allowed = simpleSetup(level);
+        const facilitiesFit = FACILITIES.every(f => {
+            const have = input.facilities[f.name];
+            if (tierCount(have) === 0) return true;
+            const cap = allowed.facilities[f.name];
+            return tierCount(have) <= tierCount(cap) && (f.hasLevels === false || tierLevel(have) <= tierLevel(cap));
+        });
+        const modulesFit = Object.entries(input.modules).every(([name, level_]) => level_ <= (allowed.modules[name] ?? 0));
+        if (facilitiesFit && modulesFit) return level;
+    }
+    return MAX_HOME_LEVEL;
+}
+
+// Every change within reach of `base` (a plan input), as `{ label, input, group }`. Changes
+// sharing a `group` are one thing taken further and further (a module at each level up to what
+// the RV level allows), listed least first; the card shows the least one that gets the most.
+function improvementCandidates(base, setup) {
+    const candidates = [];
+    const owns = name => tierCount(base.facilities[name]) > 0;
+
+    // Recipes the player hasn't unlocked, at a facility they have.
+    const skipped = new Set(skippedRecipes);
+    const locked = [
+        ...SPECIAL_RECIPES.map(r => ({ ...r, note: false })),
+        ...(base.season ? SEASON.recipeNotes.map(r => ({ ...r, note: true })) : []),
+    ];
+    for (const recipe of locked) {
+        if (!base.exclude.includes(recipe.name) || skipped.has(recipe.name)) continue;
+        if (recipe.facility && !owns(recipe.facility)) continue;
+        candidates.push({
+            label: recipe.note ? `Unlock the ${prettyItem(recipe.name)} Recipe Note` : `Unlock ${prettyItem(recipe.name)}`,
+            input: { ...base, exclude: base.exclude.filter(name => name !== recipe.name) },
+        });
+    }
+
+    // An Aniimo a level higher, up to the highest level the game is known to have.
+    if (setup.startsWith('best')) {
+        const abilities = new Set(FACILITIES.filter(f => f.ability && owns(f.name)).map(f => f.ability));
+        for (const ability of levelledAbilities().filter(a => abilities.has(a))) {
+            const level = base.aniimo_levels[ability] ?? defaultLevelFor(ability);
+            if (level >= defaultLevelFor(ability)) continue;
+            candidates.push({
+                label: `A level-${level + 1} ${ability} Aniimo`,
+                input: { ...base, aniimo_levels: { ...base.aniimo_levels, [ability]: level + 1 } },
+            });
+        }
+    } else if (setup.startsWith('custom')) {
+        for (const [name, worker] of Object.entries(base.workers)) {
+            const ability = FACILITIES.find(f => f.name === name)?.ability;
+            if (!ability || !owns(name) || worker.suitability >= defaultLevelFor(ability)) continue;
+            candidates.push({
+                label: `A level-${worker.suitability + 1} ${ability} Aniimo on the ${name}`,
+                input: { ...base, workers: { ...base.workers, [name]: { ...worker, suitability: worker.suitability + 1 } } },
+            });
+        }
+    }
+
+    // Advanced mode: a module at a higher level, one more facility, or one facility at a higher
+    // level, within what the RV level covering the rest allows. Every level is tried, since a
+    // level can unlock nothing on its own while the one after it unlocks a lot.
+    if (!isSimpleMode()) {
+        const allowed = simpleSetup(homeLevelCovering(base));
+        const levelsAbove = (from, to) => Array.from({ length: Math.max(0, to - from) }, (_, i) => from + 1 + i);
+        for (const [module, level] of Object.entries(base.modules)) {
+            for (const next of levelsAbove(level, allowed.modules[module] ?? 0)) {
+                candidates.push({
+                    group: `module:${module}`,
+                    label: `${MODULE_NAMES[module] || module} at level ${next}`,
+                    input: { ...base, modules: { ...base.modules, [module]: next } },
+                });
+            }
+        }
+        for (const f of FACILITIES) {
+            const tiers = (base.facilities[f.name] || []).filter(t => t.count > 0);
+            const cap = allowed.facilities[f.name];
+            const capLevel = f.hasLevels === false ? 1 : tierLevel(cap);
+            if (tierCount(tiers) < tierCount(cap)) {
+                for (const level of levelsAbove(0, capLevel)) {
+                    candidates.push({
+                        group: `another:${f.name}`,
+                        label: f.hasLevels === false || capLevel === 1 ? `Another ${f.name}` : `Another ${f.name}, at level ${level}`,
+                        input: { ...base, facilities: { ...base.facilities, [f.name]: [...tiers, { count: 1, level }] } },
+                    });
+                }
+            }
+            if (f.hasLevels === false || tiers.length === 0) continue;
+            const lowest = tiers.reduce((a, b) => (b.level < a.level ? b : a));
+            for (const level of levelsAbove(lowest.level, capLevel)) {
+                const raised = tiers
+                    .map(t => (t === lowest ? { ...t, count: t.count - 1 } : t))
+                    .filter(t => t.count > 0)
+                    .concat({ count: 1, level });
+                candidates.push({
+                    group: `upgrade:${f.name}`,
+                    label: tierCount(tiers) > 1 ? `One ${f.name} at level ${level}` : `${f.name} at level ${level}`,
+                    input: { ...base, facilities: { ...base.facilities, [f.name]: raised } },
+                });
+            }
+        }
+    }
+    return candidates;
+}
+
+// Starts ranking what could improve the plan on screen, unless it's already been worked out.
+function rankImprovementsFor(setup) {
+    stopRanking();
+    if (!lastPlanInput) return;
+    if (rankingsBySetup[setup]) {
+        ranking = rankingsBySetup[setup];
+        renderImprovements();
+        return;
+    }
+    const base = { ...lastPlanInput, ...aniimoInput(setup) };
+    const measure = rankMeasure();
+    const candidates = improvementCandidates(base, setup);
+    ranking = {
+        setup, measure, candidates, base: null, results: [], done: false,
+        homeLevel: isSimpleMode() ? null : homeLevelCovering(base),
+    };
+    renderImprovements();
+    if (candidates.length === 0) {
+        ranking.done = true;
+        rankingsBySetup[setup] = ranking;
+        renderImprovements();
+        return;
+    }
+    const runId = rankRunId;
+    const current = ranking;
+    rankWorker = new Worker(WORKER_URL, { type: 'module' });
+    rankWorker.onmessage = (event) => {
+        if (runId !== rankRunId) return;
+        const { type, count: result, ok } = event.data;
+        if (type === 'progress') {
+            if (result.index === -1) current.base = result;
+            else current.results[result.index] = result;
+        } else {
+            current.done = true;
+            if (ok) rankingsBySetup[setup] = current;
+            rankWorker.terminate();
+            rankWorker = null;
+        }
+        if (ranking === current) renderImprovements();
+    };
+    rankWorker.postMessage({
+        id: 1,
+        type: 'rank_improvements',
+        payload: JSON.stringify({ measure, base, candidates: candidates.map(c => c.input) }),
+    });
+}
+
+// The smallest gain worth showing (see `RANK_MIN_GAIN` in worker.js).
+const RANK_MIN_GAIN = 1e-3;
+
+// How a change compares with the plan, or null if it doesn't help: `{ score, text }`, with
+// `score` ordering changes that move the measure ahead of those that only earn more Home Coins.
+function improvementGain(result) {
+    const base = ranking.base;
+    if (!result || result.top == null || !base || base.top == null) return null;
+    const about = result.proven === false || base.proven === false ? 'about ' : '';
+    const { multiplier, suffix } = RATE_UNIT_SECONDS[document.getElementById('rate-unit').value] || RATE_UNIT_SECONDS.second;
+    if (result.top > base.top * (1 + RANK_MIN_GAIN) + 1e-12) {
+        if (ranking.measure === 'level_up') {
+            const before = base.top > 0 ? PACE_UNIT_SECONDS / base.top : null;
+            const after = PACE_UNIT_SECONDS / result.top;
+            return {
+                score: 1 + (before ? (before - after) / before : 1),
+                text: before
+                    ? `Level-up ${about}${formatDuration(before - after)} sooner (${formatDuration(after)} instead of ${formatDuration(before)})`
+                    : `Makes the level-up reachable, in ${about}${formatDuration(after)}`,
+            };
+        }
+        const label = ranking.measure === 'coins' ? 'Home Coins' : priorityLabel(ranking.measure, planContext?.aniipod);
+        const added = `+${formatRate((result.top - base.top) * multiplier)} ${label}${suffix}`;
+        return {
+            score: 1 + (base.top > 0 ? (result.top - base.top) / base.top : 1),
+            text: base.top > 0 ? `${about}+${formatPercent((result.top - base.top) / base.top)} ${label} (${added})` : `${about}${added}`,
+        };
+    }
+    const coins = result.coins;
+    if (coins && coins.base > 0 && coins.value > coins.base * (1 + RANK_MIN_GAIN)) {
+        const gain = (coins.value - coins.base) / coins.base;
+        return {
+            score: gain,
+            text: `${about}+${formatPercent(gain)} Home Coins (+${formatRate((coins.value - coins.base) * multiplier)}${suffix}), same ${ranking.measure === 'level_up' ? 'level-up time' : priorityLabel(ranking.measure, planContext?.aniipod)}`,
+        };
+    }
+    return null;
+}
+
+const PACE_UNIT_SECONDS = 86400;
+
+function formatPercent(share) {
+    const percent = share * 100;
+    return `${percent >= 10 ? Math.round(percent) : percent.toFixed(1)}%`;
+}
+
+function renderImprovements() {
+    const card = document.getElementById('improve-card');
+    if (!ranking || !lastPlan?.success) {
+        card.style.display = 'none';
+        return;
+    }
+    card.style.display = 'block';
+    const checked = ranking.results.filter(Boolean).length;
+    const total = ranking.candidates.length;
+    const within = ranking.homeLevel ? ` within what RV ${ranking.homeLevel} allows` : '';
+    const by = ranking.measure === 'level_up' ? 'how soon the level-up comes'
+        : ranking.measure === 'coins' ? 'Home Coins' : priorityLabel(ranking.measure, planContext?.aniipod);
+    // One row per change, or per group: the least of it that gets the most it can (see
+    // `improvementCandidates`).
+    const best = new Map();
+    ranking.candidates.forEach((candidate, i) => {
+        const gain = improvementGain(ranking.results[i]);
+        if (!gain) return;
+        const key = candidate.group || `#${i}`;
+        const held = best.get(key);
+        if (!held || gain.score > held.gain.score * (1 + RANK_MIN_GAIN)) best.set(key, { candidate, gain });
+    });
+    const rows = [...best.values()].sort((a, b) => b.gain.score - a.gain.score);
+    const options = new Set(ranking.candidates.map((c, i) => c.group || `#${i}`)).size;
+    const hint = document.getElementById('improve-hint');
+    if (total === 0) {
+        hint.textContent = `Nothing left to unlock or upgrade${within}.`;
+    } else if (!ranking.done) {
+        hint.textContent = `Checking changes you could make${within}, by ${by}: ${checked} of ${total} so far.`;
+    } else if (rows.length === 0) {
+        hint.textContent = `None of the ${options} changes you could make${within} would improve this plan.`;
+    } else {
+        hint.textContent = `Changes you could make${within}, best first by ${by}. ${options - rows.length} of the ${options} checked wouldn't help.`;
+    }
+    document.getElementById('improve-list').innerHTML = rows.length
+        ? `<ol class="improve-list">${rows.map(r => `<li><span class="improve-name">${r.candidate.label}</span><span class="improve-gain">${r.gain.text}</span></li>`).join('')}</ol>`
+        : '';
 }
 
 // --- Season ----------------------------------------------------------------------------
@@ -2354,6 +2639,7 @@ function priorityRows(plan) {
 // listener target, so switching units never needs a re-solve.
 function updateRateUnitDisplays() {
     updateRateDisplay();
+    renderImprovements();
     if (lastPlan && lastPlan.success) {
         renderSeedTable(lastPlan);
         renderLevelUp(lastPlan);
@@ -2473,6 +2759,8 @@ async function runFindPlan() {
 
     const runId = ++planRunId;
     plansBySetup = {};
+    rankingsBySetup = {};
+    stopRanking();
     if (pendingWorkerRequests.size > 0) restartWorker();
     try {
         const input = getPlanInputValues();

@@ -2444,3 +2444,26 @@ tr:hover .skip-row,
     letter-spacing: 0;
     color: var(--text-muted);
 }
+
+/* Ways to improve: one row per change, its gain beside it. */
+.improve-list {
+    margin: 0.75rem 0 0;
+    padding-left: 1.5rem;
+    display: grid;
+    gap: 0.45rem;
+}
+
+.improve-list li {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.25rem 1rem;
+}
+
+.improve-name {
+    font-weight: 600;
+}
+
+.improve-gain {
+    color: var(--accent);
+}
