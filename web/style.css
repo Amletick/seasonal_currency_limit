@@ -2594,12 +2594,6 @@ tr:hover .skip-row,
     }
 }
 
-.progress-total {
-    margin: 0.6rem 0 0;
-    font-size: 0.8rem;
-    color: var(--text-muted);
-}
-
 /* Homeland plots in the layout: open ones outlined and numbered, the rest hatched. */
 .layout-plot rect {
     fill: none;
@@ -2630,12 +2624,4 @@ tr:hover .skip-row,
     stroke: #ef4444;
     stroke-opacity: 0.3;
     stroke-width: 0.12;
-}
-
-.progress-total summary {
-    cursor: pointer;
-}
-
-.progress-total p {
-    margin: 0.4rem 0 0;
 }

@@ -23,48 +23,14 @@ const HANDLER_NAMES = ['time_to_reach', 'get_version', 'get_all_items'];
 // HiGHS (https://highs.dev), compiled to WebAssembly. A fresh instance per solve, from bytes
 // fetched once, so one failed solve can't leave a broken instance behind for the next.
 let highsBytes = null;
-// `print` receives HiGHS's log, line by line.
-async function newHighs(print = () => {}) {
+async function newHighs() {
     if (!highsBytes) {
         highsBytes = fetch(new URL('./vendor/highs/highs.wasm', import.meta.url)).then(r => {
             if (!r.ok) throw new Error(`Could not load HiGHS (${r.status})`);
             return r.arrayBuffer();
         });
     }
-    return highsModule({ wasmBinary: await highsBytes, print, printErr: line => console.warn(line) });
-}
-
-// What a solve took, from HiGHS's own report: the model's size (`constraints`, `decisions`,
-// `whole` of them whole numbers), how many decisions presolve `settled` by reasoning alone, the
-// partial plans (`nodes`) its branch and bound explored, ruling out the rest without visiting
-// them, and its LP `iterations`.
-function searchStats() {
-    const stats = { constraints: 0, decisions: 0, whole: 0, settled: 0, nodes: 0, iterations: 0 };
-    const read = line => {
-        const size = line.match(/^MIP \S+ has (\d+) rows; (\d+) cols; \d+ nonzeros; (\d+) integer/);
-        if (size) [stats.constraints, stats.decisions, stats.whole] = size.slice(1).map(Number);
-        const presolve = line.match(/^Presolve reductions: rows \d+\(-\d+\); columns \d+\(-(\d+)\)/);
-        if (presolve) stats.settled = Number(presolve[1]);
-        const nodes = line.match(/^\s*Nodes\s+(\d+)/);
-        if (nodes) stats.nodes += Number(nodes[1]);
-        const iterations = line.match(/^\s*(?:LP|Simplex) iterations\s*:?\s+(\d+)/);
-        if (iterations) stats.iterations += Number(iterations[1]);
-    };
-    return { stats, read };
-}
-
-// How many ways a model's whole-number decisions could be set, as a power of ten: each one's
-// range multiplied together, before any constraint rules combinations out. Read from the LP's
-// Bounds and General sections.
-function combinationsLog10(lp) {
-    const general = lp.match(/\nGeneral\n([\s\S]*?)\nEnd/);
-    if (!general) return 0;
-    const upper = new Map();
-    for (const [, lo, name, hi] of lp.matchAll(/^\s*(-?[\d.e+]+) <= (x\d+) <= (-?[\d.e+]+)$/gm)) {
-        upper.set(name, Number(hi) - Number(lo));
-    }
-    return general[1].split(/\s+/).filter(Boolean)
-        .reduce((sum, name) => sum + (upper.has(name) ? Math.log10(Math.floor(upper.get(name)) + 1) : 0), 0);
+    return highsModule({ wasmBinary: await highsBytes, print: () => {}, printErr: line => console.warn(line) });
 }
 
 // Seconds HiGHS may search before settling for the best plan found so far.
@@ -83,20 +49,17 @@ const STRICT_OPTIONS = { ...SOLVE_OPTIONS, mip_feasibility_tolerance: 1e-9 };
 // Solves one exact-planner model with HiGHS: `{ values, proven, objective }`, or null if HiGHS
 // found no plan at all.
 async function solveModel(problem, options = SOLVE_OPTIONS) {
-    const { stats, read } = searchStats();
-    let result = (await newHighs(read)).solve(problem.lp, options);
+    let result = (await newHighs()).solve(problem.lp, options);
     if (result.Status === 'Infeasible') {
         // HiGHS's presolve can call a tightly constrained model infeasible when it isn't (seen on
         // the level-up stock solve, whose floors come from earlier solves); solving without it
         // settles it.
-        result = (await newHighs(read)).solve(problem.lp, { ...options, presolve: 'off' });
+        result = (await newHighs()).solve(problem.lp, { ...options, presolve: 'off' });
     }
     const proven = result.Status === 'Optimal';
     if (!proven && result.Status !== 'Time limit reached') return null;
     const values = Array.from({ length: problem.variables }, (_, i) => result.Columns['x' + i]?.Primal ?? 0);
-    stats.combinationsLog10 = combinationsLog10(problem.lp);
-    stats.proven = proven;
-    return { values, proven, objective: result.ObjectiveValue, stats };
+    return { values, proven, objective: result.ObjectiveValue };
 }
 
 // The exact planner (see `exact_problem` in wasm.rs): builds the model in wasm, solves it with
@@ -107,8 +70,9 @@ async function solveModel(problem, options = SOLVE_OPTIONS) {
 // For the level-up strategy, it first finds the soonest level-up and requires the plan to keep
 // that pace; if the facilities can't make the level-up at all, the plan is for coins and says so.
 // Returns the plan's JSON, or throws with the reason it couldn't, so the caller can fall back to
-// `find_plan` and say why. `step(key, state)` reports each solve as it starts and ends, for the
-// page's progress card: `priority:<target>`, `level_up`, `final`, `stock_up` and `check`.
+// `find_plan` and say why. `step(key, state, proven)` reports each solve as it starts and ends,
+// and whether it proved its answer, for the page's progress card: `priority:<target>`,
+// `level_up`, `final`, `stock_up` and `check`.
 async function exactPlanJson(pkg, payload, step = () => {}) {
     const { exact_byproduct_problems, exact_priority_problem, exact_level_up_problem, exact_problem, exact_plan } = pkg;
     const stage = { floors: [] };
@@ -124,7 +88,7 @@ async function exactPlanJson(pkg, payload, step = () => {}) {
     for (const target of JSON.parse(payload).priorities || []) {
         step(`priority:${target}`, 'start');
         const most = await solveModel(JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), target)));
-        step(`priority:${target}`, 'done', most?.stats);
+        step(`priority:${target}`, 'done', most?.proven);
         if (!most) throw new Error(`no plan found for the most ${target}`);
         allProven &&= most.proven;
         stage.floors.push([target, Math.max(0, most.objective)]);
@@ -135,7 +99,7 @@ async function exactPlanJson(pkg, payload, step = () => {}) {
     if (levelUp.lp) {
         step('level_up', 'start');
         const fastest = await solveModel(levelUp);
-        step('level_up', 'done', fastest?.stats);
+        step('level_up', 'done', fastest?.proven);
         if (!fastest) throw new Error('no plan found for the level-up');
         if (fastest.objective > 1e-9) {
             allProven &&= fastest.proven;
@@ -157,7 +121,7 @@ async function exactPlanJson(pkg, payload, step = () => {}) {
         const relaxed = (await newHighs()).solve(problem.lp.replace(/\nGeneral\n[\s\S]*\nEnd/, '\nEnd'), {});
         bound = relaxed.ObjectiveValue;
     }
-    step('final', 'done', solved.stats);
+    step('final', 'done', solved.proven);
     if (stage.pace) {
         // Keeping that pace and those coins, spare Bench and Kiln time goes to the level-up. If
         // that solve fails, the plan above already has the pace and coins, so it stands.
@@ -165,7 +129,7 @@ async function exactPlanJson(pkg, payload, step = () => {}) {
         const stockJson = JSON.stringify(stockStage);
         step('stock_up', 'start');
         const stocked = await solveModel(JSON.parse(exact_problem(payload, stockJson)));
-        step('stock_up', 'done', stocked?.stats);
+        step('stock_up', 'done', stocked?.proven);
         step('check', 'start');
         const stockedPlan = stocked
             && JSON.parse(exact_plan(payload, stockJson, JSON.stringify({ values: stocked.values, proven: proven && stocked.proven, bound })));
@@ -226,7 +190,7 @@ async function rankImprovements(pkg, payload, report) {
         return;
     }
     let baseCoins;
-    report({ index: -1, top: baseTop.objective, proven: baseTop.proven, stats: [baseTop.stats] });
+    report({ index: -1, top: baseTop.objective, proven: baseTop.proven });
     for (const [index, input] of candidates.entries()) {
         const top = await topOf(input);
         if (!top) {
@@ -235,7 +199,6 @@ async function rankImprovements(pkg, payload, report) {
         }
         let coins = null;
         let proven = top.proven;
-        const stats = [top.stats];
         // Only when the measure itself doesn't move does the Home Coins tiebreak matter.
         if (measure !== 'coins' && top.objective <= baseTop.objective * (1 + RANK_MIN_GAIN)) {
             if (baseCoins === undefined) baseCoins = await coinsAt(base, baseTop.objective);
@@ -244,9 +207,8 @@ async function rankImprovements(pkg, payload, report) {
                 coins = { base: baseCoins.objective, value: candidateCoins.objective };
                 proven &&= baseCoins.proven && candidateCoins.proven;
             }
-            if (candidateCoins) stats.push(candidateCoins.stats);
         }
-        report({ index, top: top.objective, coins, proven, stats });
+        report({ index, top: top.objective, coins, proven });
     }
 }
 
@@ -267,7 +229,7 @@ self.onmessage = async (event) => {
             let result = null;
             let fallbackReason = null;
             // Each solve's start and end go to the page as progress, as `{ step, state }`.
-            const step = (key, state, stats) => self.postMessage({ id, type: 'progress', count: { step: key, state, stats } });
+            const step = (key, state, proven) => self.postMessage({ id, type: 'progress', count: { step: key, state, proven } });
             try {
                 result = await exactPlanJson(pkg, payload, step);
             } catch (error) {

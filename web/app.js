@@ -790,12 +790,11 @@ function rankImprovementsFor(setup) {
         if (type === 'progress') {
             if (result.index === -1) current.base = result;
             else current.results[result.index] = result;
-            current.solves = [...(current.solves || []), ...(result.stats || [])];
-            setStep('improve', 'start', `${current.results.filter(Boolean).length} of ${candidates.length}`, combineStats(current.solves));
+            setStep('improve', 'start', `${current.results.filter(Boolean).length} of ${candidates.length}`);
         } else {
             current.done = true;
             if (ok) rankingsBySetup[setup] = current;
-            setStep('improve', ok ? 'done' : 'fail', `${candidates.length} changes`, combineStats(current.solves || []));
+            setStep('improve', ok ? 'done' : 'fail', `${candidates.length} changes`);
             rankWorker.terminate();
             rankWorker = null;
         }
@@ -1111,9 +1110,7 @@ function renderHomelandLayout(plan) {
             : 'Nothing in this plan is carried to the Storage Unit.'}${notes ? ` ${notes}` : ''}`;
         lastLayout = { layout, homeLevel };
         document.getElementById('layout-diagram').innerHTML = homelandSvg(layout, homeLevel);
-        const layoutStep = progress?.steps.find(s => s.key === 'layout');
-        if (layoutStep) layoutStep.spots = layout.tried;
-        setStep('layout', 'done', `${formatNumber(layout.tried)} spots`);
+        setStep('layout', 'done');
     };
     layoutWorker.onerror = (event) => {
         console.error('Homeland layout failed:', event.message || event);
@@ -1221,15 +1218,15 @@ function startProgress(input, runId) {
 const PLAN_SOLVES = ['level_up', 'final', 'stock_up', 'check'];
 
 // Moves step `key` on: 'start', 'done', 'skip' or 'fail', with an optional note such as
-// "3 of 12", and for a solve, what HiGHS reported of its search (see `searchStats` in
-// worker.js). The backup planner only appears if the exact one couldn't run.
-function setStep(key, state, detail, stats) {
+// "3 of 12", and for a solve, whether HiGHS proved its answer. The backup planner only appears
+// if the exact one couldn't run.
+function setStep(key, state, detail, proven) {
     if (!progress || progress.runId !== planRunId) return;
     if (PLAN_SOLVES.includes(key)) {
         const plan = progress.steps.find(s => s.key === 'plan');
-        if (stats) plan.solves = [...(plan.solves || []), stats];
+        if (proven === false) plan.unproven = true;
         if (state === 'start' && plan.state !== 'running') setStep('plan', 'start');
-        else if (state === 'done' && key === 'check') setStep('plan', 'done', undefined, combineStats(plan.solves || []));
+        else if (state === 'done' && key === 'check') setStep('plan', 'done', undefined, !plan.unproven);
         else renderProgress();
         return;
     }
@@ -1250,33 +1247,19 @@ function setStep(key, state, detail, stats) {
         step.state = 'skipped';
     }
     if (detail !== undefined) step.detail = detail;
-    if (stats !== undefined) step.stats = stats;
+    if (proven !== undefined) step.proven = proven;
     renderProgress();
 }
 
-// "10^4,412", with the power raised.
-const powerOfTen = log10 => `10<sup>${formatNumber(Math.max(0, Math.round(log10)))}</sup>`;
+// What "proven best" means, shown on hovering it.
+const PROVEN_MEANS = 'No plan the model allows does better. Some of its options, such as how plots can be arranged around an environment building, come from a shortlist rather than every possibility.';
 
-// Several solves' stats as one: their combinations added up (as a power of ten), the partial
-// plans they explored, and proven only if every one was.
-function combineStats(list) {
-    const logs = list.map(s => s.combinationsLog10 || 0).filter(l => l > 0);
-    const top = Math.max(0, ...logs);
-    return {
-        combinationsLog10: logs.length ? top + Math.log10(logs.reduce((sum, l) => sum + 10 ** (l - top), 0)) : 0,
-        nodes: list.reduce((sum, s) => sum + (s.nodes || 0), 0),
-        proven: list.every(s => s.proven !== false),
-    };
-}
-
-// How many combinations a solve checked. A proven solve checked them all: it explores a few
-// partial plans and rules out the rest by their bounds, so the plan it gives is the best of
-// every one. One that ran out of time says so.
-function searchNote(stats) {
-    if (!stats?.combinationsLog10) return '';
-    return stats.proven === false
-        ? `${powerOfTen(stats.combinationsLog10)} combinations, out of time`
-        : `${powerOfTen(stats.combinationsLog10)} combinations checked`;
+// Whether a solve proved its plan the best the model allows, or ran out of time first.
+function searchNote(proven) {
+    if (proven === undefined) return '';
+    return proven
+        ? `<span title="${PROVEN_MEANS}">proven best</span>`
+        : '<span title="The solver ran out of time before it could prove nothing does better.">best found in time</span>';
 }
 
 // Once the plan is back, any solve that never ran (a level-up out of reach skips the last one;
@@ -1304,20 +1287,13 @@ function renderProgress() {
         skipped: '<span class="step-icon skipped" aria-label="Skipped">–</span>',
     }[state] || '<span class="step-icon pending" aria-label="Waiting">•</span>');
     const time = ms => ms == null ? '' : ms < 1000 ? `${Math.max(1, Math.round(ms))} ms` : `${(ms / 1000).toFixed(1)} s`;
-    const all = combineStats(progress.steps.filter(s => s.stats && s.state === 'done').map(s => s.stats));
-    const spots = progress.steps.find(s => s.key === 'layout')?.spots;
-    const totals = [searchNote(all), spots ? `${formatNumber(spots)} layout spots` : ''].filter(Boolean).join(' · ');
-    const open = !!card.querySelector('.progress-total')?.open;
     card.innerHTML = `<ol class="progress-steps">${progress.steps.map(step => {
         const finished = step.state === 'done' || step.state === 'fail';
-        const note = [step.detail, finished ? searchNote(step.stats) : '', finished ? time(step.ms) : ''].filter(Boolean).join(' · ');
-        const explored = finished && step.stats?.nodes ? ` title="${formatNumber(step.stats.nodes)} partial plans explored; the rest ruled out by their bounds"` : '';
+        const note = [step.detail, finished ? searchNote(step.proven) : '', finished ? time(step.ms) : ''].filter(Boolean).join(' · ');
         return `
         <li class="progress-step ${step.state}">${icon(step.state)}<span class="step-label">${step.label}</span>
-            <span class="step-note"${explored}>${note}</span></li>`;
-    }).join('')}</ol>
-        ${totals ? `<details class="progress-total"${open ? ' open' : ''}><summary>In all: ${totals}</summary>
-            <p>A combination is one way to set how many of each facility make what. The solver explores a few thousand and rules out the rest by their bounds, so its plan is the best of all of them.</p></details>` : ''}`;
+            <span class="step-note">${note}</span></li>`;
+    }).join('')}</ol>`;
 }
 
 // --- Season ----------------------------------------------------------------------------
@@ -3240,7 +3216,7 @@ async function runFindPlan() {
         const bestJson = await callWorker('find_plan', JSON.stringify({ ...input, aniimo: bestSetup }), (count) => {
             // The exact planner reports each solve; the backup planner counts its trials.
             if (typeof count === 'object') {
-                setStep(count.step, count.state, undefined, count.stats);
+                setStep(count.step, count.state, undefined, count.proven);
                 return;
             }
             setStep('backup', 'start', `trial ${count}`);
