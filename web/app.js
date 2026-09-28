@@ -180,7 +180,7 @@ let lastGoalResult = null;
 // Display name for each optimizable currency. Coins are the only one since the full release
 // removed Bud Tickets; kept as a map so a plan's `currency` still resolves to its label.
 const CURRENCY_LABELS = {
-    coins: 'Coins',
+    coins: 'Home Coins',
     aniimo_exp: 'Aniimo EXP',
     aniipods: 'Aniipods',
 };
@@ -844,7 +844,7 @@ function showAniimoSetup() {
 }
 
 const ITEM_NAMES = {
-    coins: 'Coins',
+    coins: 'Home Coins',
     wood_block: 'Wood Blocks',
     mineral_sand: 'Mineral Sand',
     umbral_sweet_and_spicy_sauce: 'Umbral Sweet and Spicy Sauce',
@@ -864,7 +864,7 @@ function isLevelUpStrategy() {
 // of each ticked one as the ones above it allow, then earns coins with what's left (see
 // `JsPlanInput::priorities` in wasm.rs).
 const PRIORITY_TARGETS = [
-    { id: 'coins', label: 'Coins' },
+    { id: 'coins', label: 'Home Coins' },
     { id: 'aniimo_exp', label: 'Aniimo EXP' },
     { id: 'aniipods', label: 'Aniipods' },
     { id: 'Wood Blocks', label: 'Wood Blocks' },
@@ -1049,7 +1049,7 @@ function renderStrategy() {
     const stockDetails = document.getElementById('level-up-stock');
     const unavailable = levelUpUnavailable();
     if (unavailable) {
-        costEl.innerHTML = `<p class="level-up-note">${unavailable} Plans will go for the most coins.</p>`;
+        costEl.innerHTML = `<p class="level-up-note">${unavailable} Plans will go for the most Home Coins.</p>`;
         stockDetails.style.display = 'none';
         return;
     }
@@ -1135,12 +1135,12 @@ function renderLevelUp(plan) {
     const report = plan.level_up;
     if (context.unavailable) {
         time.textContent = '-';
-        lines.innerHTML = `<p class="level-up-note">${context.unavailable} This plan is for the most coins.</p>`;
+        lines.innerHTML = `<p class="level-up-note">${context.unavailable} This plan is for the most Home Coins.</p>`;
         return;
     }
     if (context.ready) {
         time.textContent = 'Ready now';
-        lines.innerHTML = `<p class="level-up-note">You already have everything it costs. This plan is for the most coins.</p>`;
+        lines.innerHTML = `<p class="level-up-note">You already have everything it costs. This plan is for the most Home Coins.</p>`;
         return;
     }
     if (!report) {
@@ -1148,7 +1148,7 @@ function renderLevelUp(plan) {
             ? `These facilities can't make everything it costs.`
             : `The level-up couldn't be planned.`;
         time.textContent = '-';
-        lines.innerHTML = `<p class="level-up-note">${why} This plan is for the most coins.</p>`;
+        lines.innerHTML = `<p class="level-up-note">${why} This plan is for the most Home Coins.</p>`;
         return;
     }
     time.textContent = `in ${formatDuration(report.seconds)}`;
@@ -1172,7 +1172,7 @@ function renderLevelUp(plan) {
         .map(r => ({ name: r.name, spare: Math.floor(r.have + r.per_second * report.seconds - r.need) }))
         .concat((report.leftovers || []).map(([name, amount]) => ({ name, spare: Math.floor(amount) })))
         .filter(r => r.spare >= 1)
-        .map(r => `${formatNumber(r.spare)} ${r.name === 'coins' ? 'coins' : ITEM_NAMES[r.name] || prettyItem(r.name)}`);
+        .map(r => `${formatNumber(r.spare)} ${r.name === 'coins' ? 'Home Coins' : ITEM_NAMES[r.name] || prettyItem(r.name)}`);
     const coinsNote = surplus.length
         ? `<p class="level-up-coins"><span>Surplus:</span> <strong>${surplus.join(', ')}</strong></p>`
         : '';
@@ -1224,9 +1224,9 @@ function renderSeedTable(plan) {
                 <td>${prettyItem(r.name)}</td>
                 <td>${r.plots}</td>
                 <td>${amount(r.seeds)}</td>
-                <td>${r.wheat > 0 ? `${amount(r.wheat)} ${SEASON.currency}` : r.cost > 0 ? `${amount(r.cost)} coins` : 'free'}</td>
+                <td>${r.wheat > 0 ? `${amount(r.wheat)} ${SEASON.currency}` : r.cost > 0 ? `${amount(r.cost)} Home Coins` : 'free'}</td>
             </tr>`).join('')}</tbody>
-            ${rows.length > 1 && totalCost > 0 ? `<tfoot><tr><td colspan="3">Total</td><td>${amount(totalCost)} coins</td></tr></tfoot>` : ''}
+            ${rows.length > 1 && totalCost > 0 ? `<tfoot><tr><td colspan="3">Total</td><td>${amount(totalCost)} Home Coins</td></tr></tfoot>` : ''}
         </table>`;
 }
 
@@ -1378,7 +1378,7 @@ function renderGoalTargets(plan) {
 }
 
 function goalName(row) {
-    return row.target === 'coins' ? 'Coins' : row.label;
+    return row.target === 'coins' ? 'Home Coins' : row.label;
 }
 
 // Renders the item-level production breakdown from `goalResult.products`; one row per income
@@ -2328,7 +2328,7 @@ function priorityRows(plan) {
         missing: missing[p.target] || null,
     }));
     if (!rows.some(r => r.target === 'coins')) {
-        rows.push({ rank: null, target: 'coins', label: rows.length ? "Coins, from what's left" : 'Coins', perSecond: plan.rate_per_second, items: [], missing: null });
+        rows.push({ rank: null, target: 'coins', label: rows.length ? "Home Coins, from what's left" : 'Home Coins', perSecond: plan.rate_per_second, items: [], missing: null });
     }
     // During the season, points come with every season item sold, ranked or not.
     if (plan.season_points != null && !rows.some(r => r.target === 'season_points')) {
@@ -2575,7 +2575,7 @@ function renderGoalAlso(rows, chosen, seconds) {
     const el = document.getElementById('goal-also');
     const also = seconds > 0
         ? rows.filter(r => r !== chosen && r.perSecond > 1e-12)
-            .map(r => `${formatNumber(Math.floor(r.perSecond * seconds))} ${r.target === 'coins' ? 'coins' : goalName(r)}`)
+            .map(r => `${formatNumber(Math.floor(r.perSecond * seconds))} ${goalName(r)}`)
         : [];
     el.style.display = also.length ? 'block' : 'none';
     el.innerHTML = also.length ? `<span>By then you'll also have:</span> <strong>${also.join(', ')}</strong>` : '';
@@ -2651,10 +2651,10 @@ function formatRecipeAniimo(recipe, facility) {
     return `<span>${abilityTag(ability)} Lv.${minLevel}+<span class="recipe-best">${best}</span></span>`;
 }
 
-// "44 coins", or what a level-up material is for.
+// "44 Home Coins", or what a level-up material is for.
 function formatRecipeSell(recipe) {
     if (recipe.sell_currency === 'none') return '<span class="hint small">RV level-ups</span>';
-    return `${formatNumber(recipe.sell_value)} ${recipe.sell_value === 1 ? 'coin' : 'coins'}`;
+    return `${formatNumber(recipe.sell_value)} ${recipe.sell_value === 1 ? 'Home Coin' : 'Home Coins'}`;
 }
 
 function formatRecipeModule(recipe) {
