@@ -2608,8 +2608,15 @@ tr:hover .skip-row,
     stroke-width: 0.12;
 }
 
+/* Locked plots: red, hatched, outlined and labelled in red. */
 .layout-plot.locked rect {
     fill: url(#layout-locked);
+    stroke: #ef4444;
+    stroke-opacity: 0.8;
+}
+
+.layout-svg .layout-plot.locked text {
+    fill: #ef4444;
 }
 
 .layout-svg .layout-plot text {
@@ -2620,7 +2627,7 @@ tr:hover .skip-row,
 }
 
 .layout-hatch {
-    stroke: var(--text-muted);
-    stroke-opacity: 0.25;
+    stroke: #ef4444;
+    stroke-opacity: 0.3;
     stroke-width: 0.12;
 }

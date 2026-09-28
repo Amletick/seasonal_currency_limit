@@ -1132,7 +1132,7 @@ function homelandSvg(layout, homeLevel) {
     const coverage = layout.pieces.flatMap(p => p.members)
         .filter(m => m.building && m.mode)
         .map(m => ({ x: m.x + m.w / 2 - ENVIRONMENT_COVERAGE_RADIUS, y: m.y + m.h / 2 - ENVIRONMENT_COVERAGE_RADIUS, w: ENVIRONMENT_COVERAGE_RADIUS * 2, h: ENVIRONMENT_COVERAGE_RADIUS * 2, mode: m.mode }));
-    // The whole homeland, its plots marked out and the ones not open yet shaded and labelled.
+    // The whole homeland, its plots marked out and the ones not open yet shaded.
     const plots = homelandPlots();
     // Zoomed to what's placed, a couple of tiles around it, unless the whole homeland is asked for.
     const placed = [layout.storage, ...layout.pieces.flatMap(p => p.members)];
@@ -1143,9 +1143,9 @@ function homelandSvg(layout, homeLevel) {
     const maxY = whole ? Math.max(...plots.map(p => p.y + p.h)) + 1 : Math.ceil(Math.max(...placed.map(r => r.y + r.h))) + 2;
     const plotShapes = plots.map(p => {
         const open = p.number <= homeLevel;
-        // Only plots still to come are labelled, with the RV level that opens them.
+        // An open plot is named by its number; one still to come by the RV level that opens it.
         return `<g class="layout-plot${open ? '' : ' locked'}"><rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" />
-            ${open ? '' : `<text x="${p.x + 0.6}" y="${p.y + 0.9}" font-size="0.9">RV ${p.number}</text>`}</g>`;
+            <text x="${p.x + 0.6}" y="${p.y + 0.9}" font-size="0.9">${open ? 'Plot' : 'RV'} ${p.number}</text></g>`;
     }).join('');
     const lines = [];
     for (let x = minX; x <= maxX; x++) lines.push(`<line x1="${x}" y1="${minY}" x2="${x}" y2="${maxY}" />`);
