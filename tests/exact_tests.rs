@@ -273,73 +273,22 @@ fn exact_level_up_processes_spare_byproducts() {
     assert!(net["coarse_sifted_ore"] * seconds > 150.0, "ore {}", net["coarse_sifted_ore"] * seconds);
 }
 
-/// Every item plus the Harvest Moon Festival's, for a player getting `wheat` Moonray Wheat a day.
-fn load_items_with_season(wheat: f64) -> Option<Vec<ProductionItem>> {
+/// Every item plus the Harvest Moon Festival's.
+fn load_items_with_season() -> Option<Vec<ProductionItem>> {
     let mut items = load_items()?;
     let text = std::fs::read_to_string("data/harvest_moon_festival.csv").expect("season data");
-    let mut season = aniimax::data::parse_season(&text, wheat).expect("season parses");
+    let mut season = aniimax::data::parse_season(&text).expect("season parses");
     aniimax::models::apply_watering(&mut season);
     items.extend(season);
     Some(items)
 }
 
-// Season seeds cost 4 Moonray Wheat a batch, so 400 a day plants up to 100 batches of Moondew
-// Radish or Waxing Moon Pepper (8 a batch, 74 coins each), far more per plot than potato (15/480
-// coins/sec a plot at level 2). Plots are whole, so the best split can leave some wheat unspent:
-// 2 plots at 48 batches a day each beat stretching the last 4 batches over a third plot.
+// Moonray Wheat is treated as unlimited, so season seeds cost nothing a plan counts and all six
+// plots grow Moondew Radish or Waxing Moon Pepper (8 a batch, 74 coins each), far more per plot
+// than potato. The plan still reports the 4 wheat a batch its seeds take.
 #[test]
-fn exact_season_seeds_share_the_daily_wheat() {
-    let Some(items) = load_items_with_season(400.0) else { return };
-    let counts = FacilityCounts::only(&[("Farmland", 6, 2)]);
-    let plan = solve_and_check(&items, &counts, &ModuleLevels::default());
-    let grow = items.iter().find(|i| i.name == "moondew_radish").unwrap().production_time;
-    let coins = |plots: f64| (plots * 86_400.0 / grow).min(100.0) * 8.0 * 74.0 / 86_400.0 + (6.0 - plots) * 15.0 / 480.0;
-    let expected = (0..=6).map(|plots| coins(plots as f64)).fold(0.0, f64::max);
-    assert!((plan.rate_per_second - expected).abs() < 1e-9, "got {}, expected {expected}", plan.rate_per_second);
-    let batches: f64 = ["moondew_radish", "waxing_moon_pepper"]
-        .iter()
-        .filter_map(|name| plan.recipe_rates.get(*name))
-        .sum::<f64>()
-        * 86_400.0;
-    assert!(batches <= 100.0 + 1e-6, "{batches} batches a day");
-}
-
-// Points as a priority: every season crop sold counts 1, so the most points is all 100 batches a
-// day sold raw (800 points); keeping that costs coins, since the third plot the last 4 batches
-// need would earn more growing potato.
-#[test]
-fn exact_season_points_are_a_priority() {
-    let Some(items) = load_items_with_season(400.0) else { return };
-    let counts = FacilityCounts::only(&[("Farmland", 6, 2)]);
-    let modules = ModuleLevels::default();
-    let points = aniimax::models::SEASON_POINTS;
-    let most = solve_exact(&items, points, &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
-    assert!(most.proven_optimal);
-    assert!((most.rate_per_second * 86_400.0 - 800.0).abs() < 1e-6, "{} points a day", most.rate_per_second * 86_400.0);
-    check_plan(&most, &items, points, &counts, &modules, None).expect("points plan passes its re-check");
-    let floors = vec![(points.to_string(), most.rate_per_second)];
-    let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &floors }, None, None).unwrap();
-    assert!(plan.proven_optimal);
-    check_plan(&plan, &items, "coins", &counts, &modules, None).expect("coin plan passes its re-check");
-    let grow = items.iter().find(|i| i.name == "moondew_radish").unwrap().production_time;
-    let expected = 100.0 * 8.0 * 74.0 / 86_400.0 + (6.0 - (100.0 * grow / 86_400.0).ceil()) * 15.0 / 480.0;
-    assert!((plan.rate_per_second - expected).abs() < 1e-9, "got {}, expected {expected}", plan.rate_per_second);
-}
-
-// Without the season's wheat, its seeds can't be bought, so nothing changes.
-#[test]
-fn exact_season_without_wheat_plants_nothing() {
-    let Some(items) = load_items_with_season(0.0) else { return };
-    let counts = FacilityCounts::only(&[("Farmland", 6, 2)]);
-    let plan = solve_and_check(&items, &counts, &ModuleLevels::default());
-    assert!((plan.rate_per_second - 6.0 * 15.0 / 480.0).abs() < 1e-9, "got {}", plan.rate_per_second);
-}
-
-// With no cap on Moonray Wheat, season seeds cost nothing a plan counts, so all six plots grow
-// Moondew Radish or Waxing Moon Pepper: 8 x 74 coins every watered 1800s each.
-#[test]
-fn exact_season_without_a_cap_plants_every_plot() {
-    let Some(items) = load_items_with_season(f64::INFINITY) else { return };
+fn exact_season_crops_fill_every_plot() {
+    let Some(items) = load_items_with_season() else { return };
     let counts = FacilityCounts::only(&[("Farmland", 6, 2)]);
     let plan = solve_and_check(&items, &counts, &ModuleLevels::default());
     let grow = items.iter().find(|i| i.name == "moondew_radish").unwrap().production_time;
@@ -347,4 +296,27 @@ fn exact_season_without_a_cap_plants_every_plot() {
     assert!((plan.rate_per_second - expected).abs() < 1e-9, "got {}, expected {expected}", plan.rate_per_second);
     let spend = aniimax::exact::season_seed_spend(&plan, &items) * 86_400.0;
     assert!((spend - 6.0 * 4.0 * 86_400.0 / grow).abs() < 1e-6, "{spend} wheat a day");
+}
+
+// Points as a priority: every season crop sold raw counts 1, which beats cooking 16 of them into
+// something worth 8 at most, so the most points is all six plots sold raw. The coin plan that has
+// to keep that many points is then the same as the best coin plan.
+#[test]
+fn exact_season_points_are_a_priority() {
+    let Some(items) = load_items_with_season() else { return };
+    let counts = FacilityCounts::only(&[("Farmland", 6, 2), ("Simmering Pot", 1, 1), ("Tidewhisper Sandcastle", 1, 1)]);
+    let modules = ModuleLevels::default();
+    let points = aniimax::models::SEASON_POINTS;
+    let most = solve_exact(&items, points, &counts, &modules, Goal::Earn { floors: &[] }, None, None).unwrap();
+    assert!(most.proven_optimal);
+    let grow = items.iter().find(|i| i.name == "moondew_radish").unwrap().production_time;
+    assert!((most.rate_per_second - 6.0 * 8.0 / grow).abs() < 1e-9, "{} points a second", most.rate_per_second);
+    check_plan(&most, &items, points, &counts, &modules, None).expect("points plan passes its re-check");
+    let floors = vec![(points.to_string(), most.rate_per_second)];
+    let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &floors }, None, None).unwrap();
+    assert!(plan.proven_optimal);
+    check_plan(&plan, &items, "coins", &counts, &modules, None).expect("coin plan passes its re-check");
+    let kept = aniimax::exact::target_rate(&plan, &items, points);
+    // Floors leave 0.01% of slack for the solver's tolerances.
+    assert!(kept >= most.rate_per_second * (1.0 - 1.01e-4), "kept {kept} of {} points a second", most.rate_per_second);
 }

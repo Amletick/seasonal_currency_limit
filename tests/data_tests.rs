@@ -113,7 +113,7 @@ fn load_items() -> Option<Vec<aniimax::models::ProductionItem>> {
     data_dir.exists().then(|| {
         let mut items = load_all_data(data_dir).expect("Failed to load data");
         let season = std::fs::read_to_string(data_dir.join("harvest_moon_festival.csv")).expect("season data");
-        items.extend(aniimax::data::parse_season(&season, f64::INFINITY).expect("season parses"));
+        items.extend(aniimax::data::parse_season(&season).expect("season parses"));
         items
     })
 }

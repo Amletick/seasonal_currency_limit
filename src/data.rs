@@ -115,10 +115,10 @@ struct SeasonRow {
 }
 
 /// Parses a season's recipes (columns `name, facility, raw_materials, required_amount, seed_cost,
-/// sell_value, points, production_time, workload, yield, facility_level`), for a player who gets
-/// `budget_per_day` of the season currency a day for seeds (see [`crate::models::SeasonTerms`]).
-/// Crops are watered like any other; call [`crate::models::apply_watering`] on them.
-pub fn parse_season(csv_text: &str, budget_per_day: f64) -> Result<Vec<ProductionItem>, Box<dyn Error>> {
+/// sell_value, points, production_time, workload, yield, facility_level`; see
+/// [`crate::models::SeasonTerms`]). Crops are watered like any other; call
+/// [`crate::models::apply_watering`] on them.
+pub fn parse_season(csv_text: &str) -> Result<Vec<ProductionItem>, Box<dyn Error>> {
     let mut rdr = ReaderBuilder::new().trim(csv::Trim::All).from_reader(csv_text.as_bytes());
     let mut items = Vec::new();
     for row in rdr.deserialize::<SeasonRow>() {
@@ -148,7 +148,6 @@ pub fn parse_season(csv_text: &str, budget_per_day: f64) -> Result<Vec<Productio
             season: Some(crate::models::SeasonTerms {
                 points: row.points,
                 seed_cost: row.seed_cost.unwrap_or(0.0),
-                budget_per_day,
             }),
         });
     }

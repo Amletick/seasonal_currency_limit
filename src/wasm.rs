@@ -731,10 +731,6 @@ pub struct JsPlanInput {
     /// `"season_points"` (see [`crate::models::SEASON_POINTS`]).
     #[serde(default)]
     pub season: bool,
-    /// The most Moonray Wheat a day the season's seeds may cost, from what season orders pay;
-    /// `None` for no cap, since orders pay out far more than seeds cost.
-    #[serde(default)]
-    pub season_wheat: Option<f64>,
 }
 
 impl JsPlanInput {
@@ -1533,8 +1529,7 @@ impl PreparedInput {
         };
         let mut items = get_embedded_items();
         if input.season {
-            let budget = input.season_wheat.map_or(f64::INFINITY, |wheat| wheat.max(0.0));
-            let mut season = crate::data::parse_season(include_str!("../data/harvest_moon_festival.csv"), budget)
+            let mut season = crate::data::parse_season(include_str!("../data/harvest_moon_festival.csv"))
                 .expect("embedded harvest_moon_festival.csv is valid");
             crate::models::apply_watering(&mut season);
             items.extend(season);

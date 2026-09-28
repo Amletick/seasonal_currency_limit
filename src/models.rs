@@ -94,18 +94,15 @@ pub struct ProductionItem {
 pub const SEASON_POINTS: &str = "season_points";
 
 /// A season item's terms, e.g. for the Harvest Moon Festival an Umbral Hot Pot sells for 2150
-/// coins and 8 points, and a Moondew Radish's seeds cost 4 Moonray Wheat. The season currency
-/// comes from daily orders, so the player says how much they get a day and every season crop's
-/// seeds share it.
+/// coins and 8 points, and a Moondew Radish's seeds cost 4 Moonray Wheat. Season orders pay out
+/// far more of the season currency than seeds cost, so plans treat it as unlimited and only
+/// report what the seeds take.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct SeasonTerms {
     /// Season points per unit sold, on top of its coins.
     pub points: f64,
     /// Season currency the seeds for one batch cost; 0 for anything that isn't a season crop.
     pub seed_cost: f64,
-    /// Season currency the player has a day for seeds, the same on every season item;
-    /// `f64::INFINITY` when the player doesn't cap it.
-    pub budget_per_day: f64,
 }
 
 impl ProductionItem {

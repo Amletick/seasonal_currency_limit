@@ -337,7 +337,7 @@ function getPersistedFieldIds() {
         'mode-simple', 'mode-advanced', 'home-level',
         'ecological-module-level', 'kitchen-module-level',
         'resource-detector-level', 'crafting-module-level',
-        'rate-unit', 'season-on', 'season-wheat'
+        'rate-unit', 'season-on'
     ];
 }
 
@@ -594,13 +594,6 @@ function seasonAvailable() {
 
 function seasonActive() {
     return seasonAvailable() && document.getElementById('season-on').checked;
-}
-
-// The most Moonray Wheat a day seeds may cost (`JsPlanInput::season_wheat`), or null for no cap:
-// season orders pay out far more than seeds cost, so the field starts blank.
-function seasonWheatCap() {
-    const value = document.getElementById('season-wheat').value.trim();
-    return value === '' ? null : Math.max(0, numberOrDefault(value, 0));
 }
 
 function renderSeason() {
@@ -1284,7 +1277,6 @@ function getPlanInputValues() {
             level_up: levelUpInput(),
             exclude: excludedRecipes(),
             season: seasonActive(),
-        season_wheat: seasonWheatCap(),
             facilities,
             modules
         };
@@ -1312,7 +1304,6 @@ function getPlanInputValues() {
         level_up: levelUpInput(),
         exclude: excludedRecipes(),
         season: seasonActive(),
-        season_wheat: seasonWheatCap(),
         facilities,
         modules
     };

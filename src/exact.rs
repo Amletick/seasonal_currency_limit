@@ -15,9 +15,9 @@
 //!   runs one mode and one coverage mix (see [`crate::coverage::single_building_options`]).
 //! - Woodland and Mine byproducts (Wood Blocks, Mineral Sand) balance like any other item, so the
 //!   Woodworking Bench and Chimney Kiln can use them.
-//! - During a season, its crops' seeds cost the season currency, and all of them together can
-//!   cost at most what the player gets a day (see [`crate::models::SeasonTerms`]). Season items
-//!   also earn points when sold, which a priority or floor can name as [`crate::models::SEASON_POINTS`].
+//! - During a season, its items also earn points when sold, which a priority or floor can name
+//!   as [`crate::models::SEASON_POINTS`]. Season seeds cost the season currency, which plans treat
+//!   as unlimited (see [`crate::models::SeasonTerms`]).
 //! - The objective is the target currency per second from everything sold; for coins, minus seed
 //!   costs (seeds are paid in coins, so they don't come off an Aniimo EXP total). A floor can
 //!   name another currency, so a plan keeps up the Aniimo EXP or Aniipods an earlier solve found
@@ -188,12 +188,6 @@ const STOCK_UP_COIN_WEIGHT: f64 = 1e-6;
 /// covers doesn't leave the model unbounded.
 const MAX_PACE: f64 = PACE_UNIT;
 
-/// The season currency a day's orders give, per second, for season crops' seeds; every season
-/// item carries the same budget.
-fn season_budget_per_second(recipes: &[&ProductionItem]) -> f64 {
-    recipes.iter().filter_map(|r| r.season).map(|s| s.budget_per_day).fold(0.0, f64::max) / 86_400.0
-}
-
 /// The season currency `exact` spends on seeds per second.
 pub fn season_seed_spend(exact: &ExactPlan, items: &[ProductionItem]) -> f64 {
     let all: HashMap<&str, &ProductionItem> = items.iter().map(|i| (i.name.as_str(), i)).collect();
@@ -341,16 +335,6 @@ fn build_model<'a>(
         model.constrain(vec![(rate, recipe.production_time), (units, -1.0)], ComparisonOp::Le, 0.0);
         rate_of.push((recipe, rate));
         units_of.push((recipe, units));
-    }
-
-    // Season crops' seeds share the season currency the player gets a day.
-    let seeds: Vec<(usize, f64)> = rate_of
-        .iter()
-        .filter_map(|&(recipe, rate)| recipe.season.filter(|s| s.seed_cost > 0.0).map(|s| (rate, s.seed_cost)))
-        .collect();
-    let budget = season_budget_per_second(&recipes);
-    if !seeds.is_empty() && budget.is_finite() {
-        model.constrain(seeds, ComparisonOp::Le, budget);
     }
 
     // Item balances: made >= used + sold.
@@ -999,16 +983,6 @@ pub fn check_plan(
         // An item sold for another currency (Aniimo EXP, Aniipods) leaves the balance the same
         // way, but earns nothing towards `currency`.
         earned += sold * item.earns(currency);
-    }
-    let recipes: Vec<&ProductionItem> = plan.recipe_rates.keys().filter_map(|name| all.get(name.as_str()).copied()).collect();
-    let seeds: f64 = plan
-        .recipe_rates
-        .iter()
-        .filter_map(|(name, rate)| all.get(name.as_str())?.season.map(|s| rate * s.seed_cost))
-        .sum();
-    let budget = season_budget_per_second(&recipes);
-    if seeds > budget + TOLERANCE {
-        return Err(format!("season seeds cost {} a day but {} comes in", seeds * 86_400.0, budget * 86_400.0));
     }
     if let Some(level_up) = level_up {
         let pace = plan.pace.ok_or("the plan has no level-up pace")?;
