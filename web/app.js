@@ -1246,16 +1246,13 @@ function setStep(key, state, detail, stats) {
 // "10^4,412", with the power raised.
 const powerOfTen = log10 => `10<sup>${formatNumber(Math.max(0, Math.round(log10)))}</sup>`;
 
-// One line of what a solve's search came to.
+// What a solve's search came to: the combinations it chose from, and how many it explored.
 function searchLine(stats) {
     if (!stats) return '';
-    const parts = [];
-    if (stats.decisions) parts.push(`${formatNumber(stats.decisions)} decisions (${formatNumber(stats.whole)} whole numbers)`);
-    if (stats.combinationsLog10 > 0) parts.push(`${powerOfTen(stats.combinationsLog10)} combinations`);
-    if (stats.settled) parts.push(`${formatNumber(stats.settled)} settled by presolve`);
-    if (stats.nodes) parts.push(`${formatNumber(stats.nodes)} partial plans explored`);
-    if (stats.iterations) parts.push(`${formatNumber(stats.iterations)} LP iterations`);
-    return parts.join(' · ');
+    return [
+        stats.combinationsLog10 > 0 ? `${powerOfTen(stats.combinationsLog10)} combinations` : '',
+        stats.nodes ? `${formatNumber(stats.nodes)} explored` : '',
+    ].filter(Boolean).join(' · ');
 }
 
 // Once the plan is back, any solve that never ran (a level-up out of reach skips the last one;
@@ -1288,12 +1285,10 @@ function renderProgress() {
     const largest = Math.max(0, ...solves.map(s => s.stats.combinationsLog10 || 0));
     const spots = progress.steps.find(s => s.key === 'layout')?.spots;
     const totals = [
-        solves.length ? `${solves.length} solve${solves.length === 1 ? '' : 's'}, the largest with ${powerOfTen(largest)} combinations` : '',
-        sum('settled') ? `${formatNumber(sum('settled'))} decisions settled by presolve` : '',
-        sum('nodes') ? `${formatNumber(sum('nodes'))} partial plans explored` : '',
-        sum('iterations') ? `${formatNumber(sum('iterations'))} LP iterations` : '',
-        spots ? `${formatNumber(spots)} layout spots tried` : '',
-    ].filter(Boolean).join('; ');
+        largest > 0 ? `${powerOfTen(largest)} combinations` : '',
+        sum('nodes') ? `${formatNumber(sum('nodes'))} explored` : '',
+        spots ? `${formatNumber(spots)} layout spots` : '',
+    ].filter(Boolean).join(' · ');
     const open = !!card.querySelector('.progress-total')?.open;
     card.innerHTML = `<ol class="progress-steps">${progress.steps.map(step => {
         const line = step.state === 'done' ? searchLine(step.stats) : '';
@@ -1302,8 +1297,8 @@ function renderProgress() {
             <span class="step-note">${[step.detail, step.state === 'done' || step.state === 'fail' ? time(step.ms) : ''].filter(Boolean).join(' · ')}</span>
             ${line ? `<span class="step-search">${line}</span>` : ''}</li>`;
     }).join('')}</ol>
-        ${totals ? `<details class="progress-total"${open ? ' open' : ''}><summary>In all: ${totals}.</summary>
-            <p>A combination is one way to set every whole-number decision (how many of each facility make what) before any limit rules it out, so almost none of them are real plans. Presolve settles whatever reasoning alone decides; branch and bound then explores partial plans one branch at a time, ruling out the rest of the combinations by their bounds without visiting them, and proves the plan it finds is the best. Each LP iteration is one step of the relaxed problem it solves at each partial plan.</p></details>` : ''}`;
+        ${totals ? `<details class="progress-total"${open ? ' open' : ''}><summary>In all: ${totals}</summary>
+            <p>Combinations: every way to set how many of each facility make what. The solver explores a few partial plans and rules out the rest without visiting them.</p></details>` : ''}`;
 }
 
 // --- Season ----------------------------------------------------------------------------
