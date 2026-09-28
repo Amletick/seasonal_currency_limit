@@ -117,6 +117,17 @@ let planRunId = 0;
 
 function selectedAniimoSetup() {
     if (document.getElementById('aniimo-minimum').checked) return 'minimum';
+    if (customisingAniimo()) {
+        // Every facility's Aniimo goes into the name, so a change works out a fresh plan rather
+        // than showing the one before it.
+        const said = workedFacilities()
+            .map(name => {
+                const w = facilityWorker(name);
+                return `${name}${w.suitability}${w.personality_bonus ? 'p' : ''}`;
+            })
+            .join('|');
+        return `custom:${said}`;
+    }
     // The levels themselves travel in `aniimo_levels`; this only has to tell one Best from
     // another so each is worked out and kept separately.
     const levelled = levelledAbilities().filter(a => maxLevelFor(a) >= MAX_ANIIMO_LEVEL);
@@ -135,7 +146,7 @@ function ensurePlanFor(setup) {
     const runId = planRunId;
     // The levels are read afresh: the player may have changed which abilities they have since
     // the plan this input came from.
-    callWorker('find_plan', JSON.stringify({ ...lastPlanInput, aniimo: setup, aniimo_levels: { ...aniimoLevels } }))
+    callWorker('find_plan', JSON.stringify({ ...lastPlanInput, ...aniimoInput(setup) }))
         .then(json => {
             if (runId !== planRunId) return;
             plansBySetup[setup] = JSON.parse(json);
@@ -384,7 +395,7 @@ function initFacilityTiers(data) {
 }
 
 function saveInputsToStorage() {
-    const data = { facilityTiers, levelUpStock, skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder, aniimoLevels };
+    const data = { facilityTiers, levelUpStock, skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder, aniimoLevels, aniimoByFacility };
     getPersistedFieldIds().forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
@@ -414,6 +425,7 @@ function loadInputsFromStorage(data) {
         data['strategy-priorities'] = true;
     }
     if (data.aniimoLevels && typeof data.aniimoLevels === 'object') aniimoLevels = { ...data.aniimoLevels };
+    if (data.aniimoByFacility && typeof data.aniimoByFacility === 'object') aniimoByFacility = { ...data.aniimoByFacility };
     getPersistedFieldIds().forEach(id => {
         if (!(id in data)) return;
         const el = document.getElementById(id);
@@ -704,6 +716,17 @@ function levelledAbilities() {
 // as level 4; the game's own ceiling applies on top (see `max_level_for` in models.rs).
 let aniimoLevels = {};
 
+// What to send the solver for `setup`: the per-ability levels, or the Aniimo named facility by
+// facility when the player is customising (see `aniimo_setup_from` in wasm.rs).
+function aniimoInput(setup) {
+    if (!setup.startsWith('custom')) {
+        return { aniimo: setup, aniimo_levels: { ...aniimoLevels }, workers: {} };
+    }
+    const workers = {};
+    workedFacilities().forEach(name => { workers[name] = facilityWorker(name); });
+    return { aniimo: 'custom', aniimo_levels: {}, workers };
+}
+
 function bestAniimoLevel(ability) {
     const asked = aniimoLevels[ability] ?? MAX_ANIIMO_LEVEL;
     return Math.min(asked, maxLevelFor(ability));
@@ -727,10 +750,90 @@ function renderAniimoLevels() {
         const on = bestAniimoLevel(ability) >= MAX_ANIIMO_LEVEL;
         return `<label><input type="checkbox" data-ability="${ability}"${on ? ' checked' : ''}> ${abilityTag(ability)}</label>`;
     }).join('');
+    renderAniimoSummaryLine();
+}
+
+// Every facility an Aniimo works, so a player can say what they have one by one.
+function workedFacilities() {
+    return FACILITIES.filter(f => f.hasWorker).map(f => f.name);
+}
+
+// What the plan should assume at each facility when the player is naming them one by one. Starts
+// from the per-ability levels, and the personality bonus where the facility has a personality.
+let aniimoByFacility = {};
+
+function facilityWorker(name) {
+    const facility = FACILITIES.find(f => f.name === name);
+    const fallback = {
+        suitability: facility ? bestAniimoLevel(facility.ability) : MAX_ANIIMO_LEVEL,
+        personality_bonus: !!facility?.personality,
+    };
+    const said = aniimoByFacility[name];
+    if (!said) return fallback;
+    return {
+        suitability: Math.min(said.suitability ?? fallback.suitability, maxLevelFor(facility?.ability)),
+        personality_bonus: (said.personality_bonus ?? fallback.personality_bonus) && !!facility?.personality,
+    };
+}
+
+function customisingAniimo() {
+    return document.getElementById('aniimo-by-facility')?.checked === true;
+}
+
+// A row per facility: the ability it needs, what level to assume, and whether the Aniimo on it
+// has the facility's personality.
+function renderAniimoFacilities() {
+    const list = document.getElementById('aniimo-facility-list');
+    if (!list) return;
+    list.innerHTML = workedFacilities().map(name => {
+        const facility = FACILITIES.find(f => f.name === name);
+        const worker = facilityWorker(name);
+        const ceiling = maxLevelFor(facility.ability);
+        const levels = [1, 2, 3, 4]
+            .filter(level => level <= ceiling)
+            .map(level => `<option value="${level}"${worker.suitability === level ? ' selected' : ''}>Lv.${level}</option>`)
+            .join('');
+        const personality = facility.personality
+            ? `<label title="The Aniimo on it has ${facility.personality}, for +20% speed"><input type="checkbox" data-personality="${name}"${worker.personality_bonus ? ' checked' : ''}> ${facility.personality}</label>`
+            : '<span class="hint small">no personality bonus</span>';
+        return `<div class="aniimo-facility">
+            <span class="aniimo-facility-name">${name}</span>
+            ${abilityTag(facility.ability)}
+            <select data-level="${name}" aria-label="${name} Aniimo level">${levels}</select>
+            ${personality}
+        </div>`;
+    }).join('');
+    renderAniimoSummaryLine();
+}
+
+// The one line on the closed card: what the plan is being told to assume.
+function renderAniimoSummaryLine() {
+    const summary = document.getElementById('aniimo-levels-summary');
+    if (!summary) return;
+    if (customisingAniimo()) {
+        const named = workedFacilities().filter(name => aniimoByFacility[name]).length;
+        summary.textContent = named === 0 ? 'set per facility' : `${named} facilit${named === 1 ? 'y' : 'ies'} set`;
+        return;
+    }
     const levelled = levelledAbilities().filter(a => maxLevelFor(a) >= MAX_ANIIMO_LEVEL);
     const have = levelled.filter(a => bestAniimoLevel(a) >= MAX_ANIIMO_LEVEL).length;
-    const summary = document.getElementById('level-four-summary');
-    if (summary) summary.textContent = have === levelled.length ? 'all' : have === 0 ? 'none' : `${have} of ${levelled.length}`;
+    summary.textContent = have === levelled.length
+        ? `all level ${MAX_ANIIMO_LEVEL}`
+        : have === 0
+        ? `all level ${MAX_ANIIMO_LEVEL - 1}`
+        : `${have} of ${levelled.length} at level ${MAX_ANIIMO_LEVEL}`;
+}
+
+// Swaps the two ways of saying which Aniimo you have, and re-solves for the one now showing.
+function showAniimoDetail() {
+    const custom = customisingAniimo();
+    document.getElementById('level-four-list').style.display = custom ? 'none' : '';
+    document.getElementById('aniimo-facility-list').style.display = custom ? '' : 'none';
+    document.getElementById('aniimo-detail-hint').textContent = custom
+        ? "Set the Aniimo you'd put on each facility. Levels start from what you said by ability."
+        : 'Tick the abilities you have at level 4. An ability left unticked is planned at level 3.';
+    if (custom) renderAniimoFacilities(); else renderAniimoLevels();
+    switchAniimoSetup();
 }
 
 const ITEM_NAMES = {
@@ -2337,7 +2440,7 @@ async function runFindPlan() {
         // Only the backup planner reports progress (see worker.js); the exact planner is quick.
         // Whichever Best the player has asked for; the other one waits until they switch to it.
         const bestSetup = selectedAniimoSetup() === 'minimum' ? 'best' : selectedAniimoSetup();
-        input.aniimo_levels = { ...aniimoLevels };
+        Object.assign(input, aniimoInput(bestSetup));
         const bestJson = await callWorker('find_plan', JSON.stringify({ ...input, aniimo: bestSetup }), (count) => {
             progressFill.classList.remove('indeterminate');
             progressFill.style.width = `${trialCountToPercent(count)}%`;
@@ -2647,6 +2750,21 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('aniimo-body').hidden = !expanded;
     });
     document.getElementById('aniimo-minimum').addEventListener('change', () => switchAniimoSetup());
+    document.getElementById('aniimo-by-ability').addEventListener('change', showAniimoDetail);
+    document.getElementById('aniimo-by-facility').addEventListener('change', showAniimoDetail);
+    document.getElementById('aniimo-facility-list').addEventListener('change', event => {
+        const level = event.target.dataset?.level;
+        const personality = event.target.dataset?.personality;
+        const name = level || personality;
+        if (!name) return;
+        const worker = facilityWorker(name);
+        aniimoByFacility[name] = level
+            ? { ...worker, suitability: Number(event.target.value) }
+            : { ...worker, personality_bonus: event.target.checked };
+        saveInputsToStorage();
+        renderAniimoSummaryLine();
+        switchAniimoSetup();
+    });
     document.getElementById('level-four-list').addEventListener('change', event => {
         const ability = event.target.dataset?.ability;
         if (!ability) return;

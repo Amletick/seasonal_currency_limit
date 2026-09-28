@@ -170,8 +170,16 @@
                                     <label title="The lowest ability level each recipe accepts: the least you can get by with"><input type="radio" name="aniimo-setup" id="aniimo-minimum" value="minimum"> Minimum</label>
                                 </div>
                                 <details class="aniimo-levels">
-                                    <summary title="Aniimo level up by ability, so tick the ones you have at level 4">Level 4: <span id="level-four-summary">all</span></summary>
-                                    <div class="level-four-list" id="level-four-list"></div>
+                                    <summary title="Which Aniimo the plan may assume">Aniimo: <span id="aniimo-levels-summary">all level 4</span></summary>
+                                    <div class="aniimo-levels-body">
+                                        <div class="tabs compact" role="radiogroup" aria-label="How to say which Aniimo you have">
+                                            <label><input type="radio" name="aniimo-detail" id="aniimo-by-ability" value="ability" checked> By ability</label>
+                                            <label><input type="radio" name="aniimo-detail" id="aniimo-by-facility" value="facility"> Customize</label>
+                                        </div>
+                                        <p class="hint small" id="aniimo-detail-hint">Tick the abilities you have at level 4. An ability left unticked is planned at level 3.</p>
+                                        <div class="level-four-list" id="level-four-list"></div>
+                                        <div class="aniimo-facility-list" id="aniimo-facility-list" style="display: none;"></div>
+                                    </div>
                                 </details>
                             </div>
                         </div>

@@ -690,8 +690,9 @@ pub struct JsPlanInput {
     /// Aniimo without the personality bonus. Ignored when `aniimo` is set.
     #[serde(default)]
     pub workers: std::collections::HashMap<String, JsWorker>,
-    /// `"minimum"` or `"best"`: plan for that [`crate::models::AniimoSetup`] instead of
-    /// `workers`, and report which Aniimo each row needs (see [`JsPlanStep::aniimo`]).
+    /// `"minimum"`, `"best"` or `"custom"`: plan for that [`crate::models::AniimoSetup`] and
+    /// report which Aniimo each row needs (see [`JsPlanStep::aniimo`]). `"custom"` takes the
+    /// Aniimo from `workers`, facility by facility.
     #[serde(default)]
     pub aniimo: Option<String>,
     /// With `"best"`, the ability level the player has of each ability, e.g. `{"Earth": 4,
@@ -869,12 +870,14 @@ fn embedded_aniimo_requirements() -> crate::models::AniimoRequirements {
 fn aniimo_setup_from(
     name: &str,
     levels: &std::collections::HashMap<String, u32>,
+    workers: &std::collections::HashMap<String, JsWorker>,
 ) -> Option<crate::models::AniimoSetup> {
     // The web app tacks the abilities it is planning below level 4 onto the name, so each Best
     // gets worked out and kept apart; the levels themselves arrive in `aniimo_levels`.
     let name = name.split(':').next().unwrap_or(name);
     match name {
         "minimum" => Some(crate::models::AniimoSetup::Minimum),
+        "custom" => Some(crate::models::AniimoSetup::PerFacility(workers_from(workers))),
         // "best" plans for the levels the player says they have, the top level where they
         // haven't said; "best3" holds everything to level 3.
         "best" | "best3" => {
@@ -1502,7 +1505,10 @@ impl PreparedInput {
         };
         let mut items = get_embedded_items();
         items.retain(|item| !input.exclude.iter().any(|name| name == crate::models::base_item_name(&item.name)));
-        let setup = input.aniimo.as_deref().and_then(|name| aniimo_setup_from(name, &input.aniimo_levels));
+        let setup = input
+            .aniimo
+            .as_deref()
+            .and_then(|name| aniimo_setup_from(name, &input.aniimo_levels, &input.workers));
         let requirements = embedded_aniimo_requirements();
         match &setup {
             Some(setup) => requirements.apply(setup, &mut items),

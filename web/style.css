@@ -2343,3 +2343,37 @@ tr:hover .skip-row,
     opacity: 0.6;
     cursor: default;
 }
+
+/* Saying which Aniimo you have, facility by facility. */
+.aniimo-levels-body {
+    padding-top: 0.4rem;
+}
+
+.aniimo-facility-list {
+    display: grid;
+    gap: 0.3rem;
+    padding: 0.5rem 0 0.1rem;
+}
+
+.aniimo-facility {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+}
+
+.aniimo-facility-name {
+    min-width: 11rem;
+}
+
+.aniimo-facility select {
+    padding: 0.05rem 0.2rem;
+    font-size: 0.8rem;
+}
+
+.aniimo-facility label {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    cursor: pointer;
+}

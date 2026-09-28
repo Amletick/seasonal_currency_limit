@@ -312,7 +312,7 @@ pub const PERSONALITY_BONUS: f64 = 1.2;
 /// // Coarse-Sifted Ore needs level 2: a level-2 Aniimo takes the full 34s.
 /// assert_eq!(Worker::new(2, false).seconds_for(34.0, 2, false), 34.0);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Worker {
     /// Ability level for the facility's element, 1 to 4.
     pub suitability: u32,
@@ -372,7 +372,7 @@ impl Worker {
 /// assert_eq!(workers.get("Carousel Mill").seconds_for(108.0, 1, false), 27.0);
 /// assert_eq!(workers.get("Jukebox Dryer"), Worker::default());
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Workers {
     by_facility: std::collections::HashMap<String, Worker>,
 }
@@ -448,6 +448,10 @@ pub enum AniimoSetup {
     /// Each recipe worked by an Aniimo at exactly the ability level it requires, without the
     /// personality bonus: the least a player needs to run the plan at all.
     Minimum,
+    /// The Aniimo the player says works each facility, for a roster that doesn't fit either of
+    /// the other two: a level-4 Fire one on the Blazing Stove but no Practical for the Chimney
+    /// Kiln, say. A facility not named falls back to [`Worker::default`].
+    PerFacility(Workers),
     /// The best Aniimo the player says they have on every job, with the facility's personality
     /// bonus. At level 4 that's 600% on a processor's level-1 recipe and 480% on a level-2 one,
     /// or 300% and 216% at a gathering facility; a level lower, 480% and 360%, or 240% and 168%
@@ -498,6 +502,11 @@ impl AniimoRequirements {
             AniimoSetup::Best(levels) => {
                 let ability = self.get(item).map_or("", |(ability, _)| ability);
                 Worker::new(levels.level_for(ability), has_personality_bonus(facility))
+            }
+            // A facility with no personality of its own never gets the bonus, whatever is said.
+            AniimoSetup::PerFacility(workers) => {
+                let worker = workers.get(facility);
+                Worker::new(worker.suitability, worker.personality_bonus && has_personality_bonus(facility))
             }
             AniimoSetup::Minimum => Worker::new(self.get(item).map_or(1, |(_, level)| level), false),
         }
