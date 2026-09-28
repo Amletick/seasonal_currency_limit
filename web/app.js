@@ -1203,12 +1203,12 @@ let progress = null;
 function startProgress(input, runId) {
     const levelUp = !!input.level_up && planContext.levelUp && !planContext.ready && !planContext.unavailable;
     const priorities = input.priorities || [];
+    // A level-up's solves (the soonest level-up, the most Home Coins at that pace, spare Bench
+    // and Kiln time) are one step, and every plan's last is its final solve and the re-check
+    // of it against every limit: the worker's steps map onto these (see `setStep`).
     const steps = [
         ...priorities.map(target => ({ key: `priority:${target}`, label: `Most ${priorityLabel(target, planContext.aniipod)}` })),
-        ...(levelUp ? [{ key: 'level_up', label: 'Soonest level-up' }] : []),
-        { key: 'final', label: levelUp ? 'Most Home Coins at that pace' : priorities.length ? "Home Coins with what's left" : 'Most Home Coins' },
-        ...(levelUp ? [{ key: 'stock_up', label: 'Spare Bench and Kiln time' }] : []),
-        { key: 'check', label: 'Check the plan' },
+        { key: 'plan', label: levelUp ? 'Fastest level-up' : priorities.length ? "Home Coins with what's left" : 'Most Home Coins' },
         { key: 'layout', label: 'Homeland layout' },
         { key: 'improve', label: 'Ways to improve' },
         { key: 'minimum', label: 'Minimum team plan' },
@@ -1217,11 +1217,22 @@ function startProgress(input, runId) {
     renderProgress();
 }
 
+// The worker's solves that make up the card's 'plan' step; it's done once the plan is checked.
+const PLAN_SOLVES = ['level_up', 'final', 'stock_up', 'check'];
+
 // Moves step `key` on: 'start', 'done', 'skip' or 'fail', with an optional note such as
 // "3 of 12", and for a solve, what HiGHS reported of its search (see `searchStats` in
 // worker.js). The backup planner only appears if the exact one couldn't run.
 function setStep(key, state, detail, stats) {
     if (!progress || progress.runId !== planRunId) return;
+    if (PLAN_SOLVES.includes(key)) {
+        const plan = progress.steps.find(s => s.key === 'plan');
+        if (stats) plan.solves = [...(plan.solves || []), stats];
+        if (state === 'start' && plan.state !== 'running') setStep('plan', 'start');
+        else if (state === 'done' && key === 'check') setStep('plan', 'done', undefined, combineStats(plan.solves || []));
+        else renderProgress();
+        return;
+    }
     let step = progress.steps.find(s => s.key === key);
     if (!step && key === 'backup') {
         step = { key, label: 'Backup planner', state: 'pending' };
@@ -1273,7 +1284,7 @@ function searchNote(stats) {
 function finishSolveSteps() {
     if (!progress) return;
     progress.steps
-        .filter(s => ['level_up', 'final', 'stock_up', 'check'].includes(s.key) || s.key.startsWith('priority:'))
+        .filter(s => s.key === 'plan' || s.key.startsWith('priority:'))
         .forEach(s => { if (s.state === 'pending' || s.state === 'running') s.state = 'skipped'; });
     if (progress.steps.some(s => s.key === 'backup')) setStep('backup', 'done');
     renderProgress();
