@@ -791,11 +791,11 @@ function rankImprovementsFor(setup) {
             if (result.index === -1) current.base = result;
             else current.results[result.index] = result;
             current.explored = (current.explored || 0) + (result.nodes || 0);
-            setStep('improve', 'start', `${current.results.filter(Boolean).length} of ${candidates.length}`, current.explored);
+            setStep('improve', 'start', `${current.results.filter(Boolean).length} of ${candidates.length}`, { nodes: current.explored });
         } else {
             current.done = true;
             if (ok) rankingsBySetup[setup] = current;
-            setStep('improve', ok ? 'done' : 'fail', `${candidates.length} checked`, current.explored);
+            setStep('improve', ok ? 'done' : 'fail', `${candidates.length} checked`, { nodes: current.explored });
             rankWorker.terminate();
             rankWorker = null;
         }
@@ -1218,10 +1218,9 @@ function startProgress(input, runId) {
 }
 
 // Moves step `key` on: 'start', 'done', 'skip' or 'fail', with an optional note such as
-// "3 of 12", and for a solve, how many partial plans its search explored (HiGHS's node count;
-// the rest of the possibilities it ruled out without visiting). The backup planner only appears
-// if the exact one couldn't run.
-function setStep(key, state, detail, explored) {
+// "3 of 12", and for a solve, what HiGHS reported of its search (see `searchStats` in
+// worker.js). The backup planner only appears if the exact one couldn't run.
+function setStep(key, state, detail, stats) {
     if (!progress || progress.runId !== planRunId) return;
     let step = progress.steps.find(s => s.key === key);
     if (!step && key === 'backup') {
@@ -1240,8 +1239,23 @@ function setStep(key, state, detail, explored) {
         step.state = 'skipped';
     }
     if (detail !== undefined) step.detail = detail;
-    if (explored !== undefined) step.explored = explored;
+    if (stats !== undefined) step.stats = stats;
     renderProgress();
+}
+
+// "10^4,412", with the power raised.
+const powerOfTen = log10 => `10<sup>${formatNumber(Math.max(0, Math.round(log10)))}</sup>`;
+
+// One line of what a solve's search came to.
+function searchLine(stats) {
+    if (!stats) return '';
+    const parts = [];
+    if (stats.decisions) parts.push(`${formatNumber(stats.decisions)} decisions (${formatNumber(stats.whole)} whole numbers)`);
+    if (stats.combinationsLog10 > 0) parts.push(`${powerOfTen(stats.combinationsLog10)} combinations`);
+    if (stats.settled) parts.push(`${formatNumber(stats.settled)} settled by presolve`);
+    if (stats.nodes) parts.push(`${formatNumber(stats.nodes)} partial plans explored`);
+    if (stats.iterations) parts.push(`${formatNumber(stats.iterations)} LP iterations`);
+    return parts.join(' · ');
 }
 
 // Once the plan is back, any solve that never ran (a level-up out of reach skips the last one;
@@ -1269,17 +1283,27 @@ function renderProgress() {
         skipped: '<span class="step-icon skipped" aria-label="Skipped">–</span>',
     }[state] || '<span class="step-icon pending" aria-label="Waiting">•</span>');
     const time = ms => ms == null ? '' : ms < 1000 ? `${Math.max(1, Math.round(ms))} ms` : `${(ms / 1000).toFixed(1)} s`;
-    const explored = n => n ? `${formatNumber(n)} explored` : '';
-    const total = progress.steps.reduce((sum, s) => sum + (s.explored || 0), 0);
+    const solves = progress.steps.filter(s => s.stats?.decisions);
+    const sum = field => progress.steps.reduce((total, s) => total + (s.stats?.[field] || 0), 0);
+    const largest = Math.max(0, ...solves.map(s => s.stats.combinationsLog10 || 0));
     const spots = progress.steps.find(s => s.key === 'layout')?.spots;
     const totals = [
-        total ? `${formatNumber(total)} partial plans explored` : '',
+        solves.length ? `${solves.length} solve${solves.length === 1 ? '' : 's'}, the largest with ${powerOfTen(largest)} combinations` : '',
+        sum('settled') ? `${formatNumber(sum('settled'))} decisions settled by presolve` : '',
+        sum('nodes') ? `${formatNumber(sum('nodes'))} partial plans explored` : '',
+        sum('iterations') ? `${formatNumber(sum('iterations'))} LP iterations` : '',
         spots ? `${formatNumber(spots)} layout spots tried` : '',
-    ].filter(Boolean).join(', ');
-    card.innerHTML = `<ol class="progress-steps">${progress.steps.map(step => `
+    ].filter(Boolean).join('; ');
+    const open = !!card.querySelector('.progress-total')?.open;
+    card.innerHTML = `<ol class="progress-steps">${progress.steps.map(step => {
+        const line = step.state === 'done' ? searchLine(step.stats) : '';
+        return `
         <li class="progress-step ${step.state}">${icon(step.state)}<span class="step-label">${step.label}</span>
-            <span class="step-note">${[step.detail, explored(step.explored), step.state === 'done' || step.state === 'fail' ? time(step.ms) : ''].filter(Boolean).join(' · ')}</span></li>`).join('')}</ol>
-        ${totals ? `<p class="progress-total" title="The solver explores partial plans one branch at a time and rules out the rest of the possibilities by their bounds, without visiting them.">In all: ${totals}.</p>` : ''}`;
+            <span class="step-note">${[step.detail, step.state === 'done' || step.state === 'fail' ? time(step.ms) : ''].filter(Boolean).join(' · ')}</span>
+            ${line ? `<span class="step-search">${line}</span>` : ''}</li>`;
+    }).join('')}</ol>
+        ${totals ? `<details class="progress-total"${open ? ' open' : ''}><summary>In all: ${totals}.</summary>
+            <p>A combination is one way to set every whole-number decision (how many of each facility make what) before any limit rules it out, so almost none of them are real plans. Presolve settles whatever reasoning alone decides; branch and bound then explores partial plans one branch at a time, ruling out the rest of the combinations by their bounds without visiting them, and proves the plan it finds is the best. Each LP iteration is one step of the relaxed problem it solves at each partial plan.</p></details>` : ''}`;
 }
 
 // --- Season ----------------------------------------------------------------------------
@@ -3202,7 +3226,7 @@ async function runFindPlan() {
         const bestJson = await callWorker('find_plan', JSON.stringify({ ...input, aniimo: bestSetup }), (count) => {
             // The exact planner reports each solve; the backup planner counts its trials.
             if (typeof count === 'object') {
-                setStep(count.step, count.state, undefined, count.stats?.nodes);
+                setStep(count.step, count.state, undefined, count.stats);
                 return;
             }
             setStep('backup', 'start', `trial ${count}`);

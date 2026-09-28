@@ -34,17 +34,37 @@ async function newHighs(print = () => {}) {
     return highsModule({ wasmBinary: await highsBytes, print, printErr: line => console.warn(line) });
 }
 
-// How much searching a solve took, from HiGHS's own report: `nodes` is the partial plans its
-// branch and bound explored (the rest it ruled out without visiting), `iterations` its LP steps.
+// What a solve took, from HiGHS's own report: the model's size (`constraints`, `decisions`,
+// `whole` of them whole numbers), how many decisions presolve `settled` by reasoning alone, the
+// partial plans (`nodes`) its branch and bound explored, ruling out the rest without visiting
+// them, and its LP `iterations`.
 function searchStats() {
-    const stats = { nodes: 0, iterations: 0 };
+    const stats = { constraints: 0, decisions: 0, whole: 0, settled: 0, nodes: 0, iterations: 0 };
     const read = line => {
+        const size = line.match(/^MIP \S+ has (\d+) rows; (\d+) cols; \d+ nonzeros; (\d+) integer/);
+        if (size) [stats.constraints, stats.decisions, stats.whole] = size.slice(1).map(Number);
+        const presolve = line.match(/^Presolve reductions: rows \d+\(-\d+\); columns \d+\(-(\d+)\)/);
+        if (presolve) stats.settled = Number(presolve[1]);
         const nodes = line.match(/^\s*Nodes\s+(\d+)/);
         if (nodes) stats.nodes += Number(nodes[1]);
         const iterations = line.match(/^\s*(?:LP|Simplex) iterations\s*:?\s+(\d+)/);
         if (iterations) stats.iterations += Number(iterations[1]);
     };
     return { stats, read };
+}
+
+// How many ways a model's whole-number decisions could be set, as a power of ten: each one's
+// range multiplied together, before any constraint rules combinations out. Read from the LP's
+// Bounds and General sections.
+function combinationsLog10(lp) {
+    const general = lp.match(/\nGeneral\n([\s\S]*?)\nEnd/);
+    if (!general) return 0;
+    const upper = new Map();
+    for (const [, lo, name, hi] of lp.matchAll(/^\s*(-?[\d.e+]+) <= (x\d+) <= (-?[\d.e+]+)$/gm)) {
+        upper.set(name, Number(hi) - Number(lo));
+    }
+    return general[1].split(/\s+/).filter(Boolean)
+        .reduce((sum, name) => sum + (upper.has(name) ? Math.log10(Math.floor(upper.get(name)) + 1) : 0), 0);
 }
 
 // Seconds HiGHS may search before settling for the best plan found so far.
@@ -74,6 +94,7 @@ async function solveModel(problem, options = SOLVE_OPTIONS) {
     const proven = result.Status === 'Optimal';
     if (!proven && result.Status !== 'Time limit reached') return null;
     const values = Array.from({ length: problem.variables }, (_, i) => result.Columns['x' + i]?.Primal ?? 0);
+    stats.combinationsLog10 = combinationsLog10(problem.lp);
     return { values, proven, objective: result.ObjectiveValue, stats };
 }
 
