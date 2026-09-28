@@ -1,6 +1,5 @@
 // Aniimax Web Application
 
-import { layOut } from './layout.js';
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS,
     MAX_HOME_LEVEL, ANIIMO_MAX, simpleSetup,
@@ -766,6 +765,7 @@ function rankImprovementsFor(setup) {
         renderImprovements();
         return;
     }
+    setStep('improve', 'start');
     const base = { ...lastPlanInput, ...aniimoInput(setup) };
     const measure = rankMeasure();
     const candidates = improvementCandidates(base, setup);
@@ -778,6 +778,7 @@ function rankImprovementsFor(setup) {
         ranking.done = true;
         rankingsBySetup[setup] = ranking;
         renderImprovements();
+        setStep('improve', 'done', 'nothing to check');
         return;
     }
     const runId = rankRunId;
@@ -789,9 +790,11 @@ function rankImprovementsFor(setup) {
         if (type === 'progress') {
             if (result.index === -1) current.base = result;
             else current.results[result.index] = result;
+            setStep('improve', 'start', `${current.results.filter(Boolean).length} of ${candidates.length}`);
         } else {
             current.done = true;
             if (ok) rankingsBySetup[setup] = current;
+            setStep('improve', ok ? 'done' : 'fail', `${candidates.length} checked`);
             rankWorker.terminate();
             rankWorker = null;
         }
@@ -1034,6 +1037,7 @@ const layoutColor = m => m.building
 const initialsOf = name => name.split(/[\s-]+/).map(w => w[0]).join('').toUpperCase();
 
 let layoutRunId = 0;
+let layoutWorker = null;
 
 function renderHomelandLayout(plan) {
     const card = document.getElementById('layout-card');
@@ -1042,14 +1046,19 @@ function renderHomelandLayout(plan) {
         return;
     }
     const runId = ++layoutRunId;
+    setStep('layout', 'start');
     card.style.display = 'block';
     document.getElementById('layout-summary').textContent = 'Laying out…';
     document.getElementById('layout-diagram').innerHTML = '';
-    // Placed after the plan has painted: a large homeland takes a moment.
-    setTimeout(() => {
+    // Worked out in a worker of its own: a large homeland takes about a second.
+    const { pieces, unplaced } = homelandPieces(plan, lastPlanInput);
+    if (layoutWorker) layoutWorker.terminate();
+    layoutWorker = new Worker(WORKER_URL.replace('worker.js', 'layout-worker.js'), { type: 'module' });
+    layoutWorker.onmessage = (event) => {
+        layoutWorker.terminate();
+        layoutWorker = null;
         if (runId !== layoutRunId) return;
-        const { pieces, unplaced } = homelandPieces(plan, lastPlanInput);
-        const layout = layOut(pieces);
+        const layout = event.data;
         const members = layout.pieces.flatMap(p => p.members);
         const trips = members.reduce((sum, m) => sum + m.weight, 0);
         const walked = members.reduce((sum, m) => sum + m.weight * Math.hypot(m.x + m.w / 2, m.y + m.h / 2), 0);
@@ -1058,7 +1067,13 @@ function renderHomelandLayout(plan) {
             ? `${formatNumber(Math.round(trips))} trips/hour to the Storage Unit, ${(walked / trips).toFixed(1)} tiles each on average.${missing}`
             : `Nothing in this plan is carried to the Storage Unit.${missing}`;
         document.getElementById('layout-diagram').innerHTML = homelandSvg(layout);
-    }, 0);
+        setStep('layout', 'done');
+    };
+    layoutWorker.onerror = (event) => {
+        console.error('Homeland layout failed:', event.message || event);
+        if (runId === layoutRunId) setStep('layout', 'fail');
+    };
+    layoutWorker.postMessage({ pieces });
 }
 
 function homelandSvg(layout) {
@@ -1087,6 +1102,84 @@ function homelandSvg(layout) {
         <g><title>Storage Unit</title><rect x="${s.x + 0.04}" y="${s.y + 0.04}" width="${s.w - 0.08}" height="${s.h - 0.08}" rx="0.2" class="layout-storage" />
         <text x="0" y="0" font-size="0.8" class="layout-storage-text">SU</text></g>
     </svg>`;
+}
+
+// --- Progress card ---------------------------------------------------------------------
+// Under the button, every step of working out a plan in the order it runs, each with a spinner
+// while it runs and its time once done: the solves in the worker (see `exactPlanJson` in
+// worker.js), then the layout, the ways to improve and the Minimum team.
+
+let progress = null;
+
+function startProgress(input, runId) {
+    const levelUp = !!input.level_up && planContext.levelUp && !planContext.ready && !planContext.unavailable;
+    const priorities = input.priorities || [];
+    const steps = [
+        ...priorities.map(target => ({ key: `priority:${target}`, label: `Most ${priorityLabel(target, planContext.aniipod)}` })),
+        ...(levelUp ? [{ key: 'level_up', label: 'Soonest level-up' }] : []),
+        { key: 'final', label: levelUp ? 'Most Home Coins at that pace' : priorities.length ? "Home Coins with what's left" : 'Most Home Coins' },
+        ...(levelUp ? [{ key: 'stock_up', label: 'Spare Bench and Kiln time' }] : []),
+        { key: 'check', label: 'Check the plan' },
+        { key: 'layout', label: 'Homeland layout' },
+        { key: 'improve', label: 'Ways to improve' },
+        { key: 'minimum', label: 'Minimum team plan' },
+    ];
+    progress = { runId, steps: steps.map(step => ({ ...step, state: 'pending' })) };
+    renderProgress();
+}
+
+// Moves step `key` on: 'start', 'done', 'skip' or 'fail', with an optional note such as
+// "3 of 12". The backup planner only appears if the exact one couldn't run.
+function setStep(key, state, detail) {
+    if (!progress || progress.runId !== planRunId) return;
+    let step = progress.steps.find(s => s.key === key);
+    if (!step && key === 'backup') {
+        step = { key, label: 'Backup planner', state: 'pending' };
+        progress.steps.splice(progress.steps.findIndex(s => s.key === 'layout'), 0, step);
+    }
+    if (!step) return;
+    const now = performance.now();
+    if (state === 'start') {
+        if (step.state !== 'running') step.started = now;
+        step.state = 'running';
+    } else if (state === 'done' || state === 'fail') {
+        step.ms = step.started ? now - step.started : null;
+        step.state = state;
+    } else if (state === 'skip') {
+        step.state = 'skipped';
+    }
+    if (detail !== undefined) step.detail = detail;
+    renderProgress();
+}
+
+// Once the plan is back, any solve that never ran (a level-up out of reach skips the last one;
+// the backup planner skips them all) is marked skipped.
+function finishSolveSteps() {
+    if (!progress) return;
+    progress.steps
+        .filter(s => ['level_up', 'final', 'stock_up', 'check'].includes(s.key) || s.key.startsWith('priority:'))
+        .forEach(s => { if (s.state === 'pending' || s.state === 'running') s.state = 'skipped'; });
+    if (progress.steps.some(s => s.key === 'backup')) setStep('backup', 'done');
+    renderProgress();
+}
+
+function renderProgress() {
+    const card = document.getElementById('solve-progress');
+    if (!progress) {
+        card.style.display = 'none';
+        return;
+    }
+    card.style.display = 'block';
+    const icon = state => ({
+        running: '<span class="step-spinner" aria-label="Running"></span>',
+        done: '<span class="step-icon done" aria-label="Done">✓</span>',
+        fail: '<span class="step-icon fail" aria-label="Failed">✕</span>',
+        skipped: '<span class="step-icon skipped" aria-label="Skipped">–</span>',
+    }[state] || '<span class="step-icon pending" aria-label="Waiting">•</span>');
+    const time = ms => ms == null ? '' : ms < 1000 ? `${Math.max(1, Math.round(ms))} ms` : `${(ms / 1000).toFixed(1)} s`;
+    card.innerHTML = `<ol class="progress-steps">${progress.steps.map(step => `
+        <li class="progress-step ${step.state}">${icon(step.state)}<span class="step-label">${step.label}</span>
+            <span class="step-note">${[step.detail, step.state === 'done' || step.state === 'fail' ? time(step.ms) : ''].filter(Boolean).join(' · ')}</span></li>`).join('')}</ol>`;
 }
 
 // --- Season ----------------------------------------------------------------------------
@@ -2973,11 +3066,11 @@ async function runFindPlan() {
     btn.disabled = true;
     btnText.style.display = 'none';
     btnLoading.style.display = 'inline';
-    progressBar.style.display = 'block';
-    progressCaption.style.display = 'block';
+    // The progress card below the button follows each step; the bar only shows if the backup
+    // planner runs, since that one counts its trials.
+    progressBar.style.display = 'none';
+    progressCaption.style.display = 'none';
     progressFill.style.width = '';
-    progressFill.classList.add('indeterminate');
-    progressCaption.textContent = 'Finding the best plan...';
 
     const runId = ++planRunId;
     plansBySetup = {};
@@ -2997,6 +3090,7 @@ async function runFindPlan() {
             // Only what the player skipped; locked special recipes are the default, not news.
             skipped: [...skippedRecipes].sort((a, b) => prettyItem(a).localeCompare(prettyItem(b))),
         };
+        startProgress(input, runId);
 
         // Runs in the worker (see worker.js); the main thread stays free to paint the progress
         // bar above for however long this takes, instead of freezing. `onTrialProgress` receives
@@ -3007,27 +3101,41 @@ async function runFindPlan() {
         const bestSetup = selectedAniimoSetup() === 'minimum' ? 'best' : selectedAniimoSetup();
         Object.assign(input, aniimoInput(bestSetup));
         const bestJson = await callWorker('find_plan', JSON.stringify({ ...input, aniimo: bestSetup }), (count) => {
-            progressFill.classList.remove('indeterminate');
+            // The exact planner reports each solve; the backup planner counts its trials.
+            if (typeof count === 'object') {
+                setStep(count.step, count.state);
+                return;
+            }
+            setStep('backup', 'start', `trial ${count}`);
+            progressBar.style.display = 'block';
             progressFill.style.width = `${trialCountToPercent(count)}%`;
-            progressCaption.textContent = `Backup planner, trial ${count}...`;
         });
         progressFill.style.width = '100%';
         if (runId !== planRunId) return;
+        finishSolveSteps();
         plansBySetup[bestSetup] = JSON.parse(bestJson);
         showSelectedPlan(true);
 
         // The Minimum setup solves after Best is already on screen; switching to it before it's
         // done shows a short "still working" note until it arrives.
+        setStep('minimum', 'start');
         callWorker('find_plan', JSON.stringify({ ...input, aniimo: 'minimum' }))
             .then(json => {
                 if (runId !== planRunId) return;
+                setStep('minimum', 'done');
                 plansBySetup.minimum = JSON.parse(json);
                 if (selectedAniimoSetup() === 'minimum') showSelectedPlan(false);
             })
             .catch(error => {
-                if (runId === planRunId) console.error('Minimum Aniimo plan failed:', error);
+                if (runId !== planRunId) return;
+                setStep('minimum', 'fail');
+                console.error('Minimum Aniimo plan failed:', error);
             });
     } catch (error) {
+        if (runId === planRunId && progress) {
+            progress.steps.forEach(s => { if (s.state === 'running') s.state = 'fail'; else if (s.state === 'pending') s.state = 'skipped'; });
+            renderProgress();
+        }
         console.error('Plan calculation error:', error);
         lastPlan = null;
         showError(`Plan calculation failed: ${error.message}`);

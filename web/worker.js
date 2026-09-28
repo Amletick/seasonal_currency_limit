@@ -70,8 +70,9 @@ async function solveModel(problem, options = SOLVE_OPTIONS) {
 // For the level-up strategy, it first finds the soonest level-up and requires the plan to keep
 // that pace; if the facilities can't make the level-up at all, the plan is for coins and says so.
 // Returns the plan's JSON, or throws with the reason it couldn't, so the caller can fall back to
-// `find_plan` and say why.
-async function exactPlanJson(pkg, payload) {
+// `find_plan` and say why. `step(key, state)` reports each solve as it starts and ends, for the
+// page's progress card: `priority:<target>`, `level_up`, `final`, `stock_up` and `check`.
+async function exactPlanJson(pkg, payload, step = () => {}) {
     const { exact_byproduct_problems, exact_priority_problem, exact_level_up_problem, exact_problem, exact_plan } = pkg;
     const stage = { floors: [] };
     let allProven = true;
@@ -84,7 +85,9 @@ async function exactPlanJson(pkg, payload) {
     // The player's priorities, in order: each is made as much as the ones before it allow, and
     // the coin solve after them has to keep all of it up.
     for (const target of JSON.parse(payload).priorities || []) {
+        step(`priority:${target}`, 'start');
         const most = await solveModel(JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), target)));
+        step(`priority:${target}`, 'done');
         if (!most) throw new Error(`no plan found for the most ${target}`);
         allProven &&= most.proven;
         stage.floors.push([target, Math.max(0, most.objective)]);
@@ -93,7 +96,9 @@ async function exactPlanJson(pkg, payload) {
     let levelUpNote = null;
     const levelUp = JSON.parse(exact_level_up_problem(payload));
     if (levelUp.lp) {
+        step('level_up', 'start');
         const fastest = await solveModel(levelUp);
+        step('level_up', 'done');
         if (!fastest) throw new Error('no plan found for the level-up');
         if (fastest.objective > 1e-9) {
             allProven &&= fastest.proven;
@@ -105,6 +110,7 @@ async function exactPlanJson(pkg, payload) {
     let stageJson = JSON.stringify(stage);
     let problem = JSON.parse(exact_problem(payload, stageJson));
     if (!problem.lp) throw new Error('this setup isn\'t covered by the exact planner');
+    step('final', 'start');
     let solved = await solveModel(problem);
     if (!solved) throw new Error('the solver found no plan');
     let proven = solved.proven && allProven;
@@ -114,20 +120,26 @@ async function exactPlanJson(pkg, payload) {
         const relaxed = (await newHighs()).solve(problem.lp.replace(/\nGeneral\n[\s\S]*\nEnd/, '\nEnd'), {});
         bound = relaxed.ObjectiveValue;
     }
+    step('final', 'done');
     if (stage.pace) {
         // Keeping that pace and those coins, spare Bench and Kiln time goes to the level-up. If
         // that solve fails, the plan above already has the pace and coins, so it stands.
         const stockStage = { ...stage, coins: solved.objective };
         const stockJson = JSON.stringify(stockStage);
+        step('stock_up', 'start');
         const stocked = await solveModel(JSON.parse(exact_problem(payload, stockJson)));
+        step('stock_up', 'done');
+        step('check', 'start');
         const stockedPlan = stocked
             && JSON.parse(exact_plan(payload, stockJson, JSON.stringify({ values: stocked.values, proven: proven && stocked.proven, bound })));
         if (stockedPlan && stockedPlan.success) {
+            step('check', 'done');
             stockedPlan.level_up_note = levelUpNote;
             return JSON.stringify(stockedPlan);
         }
         console.warn('Level-up stock solve found no usable plan; keeping the plan without it.');
     }
+    step('check', 'start');
     let json = exact_plan(payload, stageJson, JSON.stringify({ values: solved.values, proven, bound }));
     let plan = JSON.parse(json);
     if (!plan.success) {
@@ -140,6 +152,7 @@ async function exactPlanJson(pkg, payload) {
         }
     }
     if (!plan.success) throw new Error(plan.error || 'the plan failed its check');
+    step('check', 'done');
     if (!levelUpNote) return json;
     plan.level_up_note = levelUpNote;
     return JSON.stringify(plan);
@@ -214,9 +227,12 @@ self.onmessage = async (event) => {
         if (type === 'find_plan') {
             let result = null;
             let fallbackReason = null;
+            // Each solve's start and end go to the page as progress, as `{ step, state }`.
+            const step = (key, state) => self.postMessage({ id, type: 'progress', count: { step: key, state } });
             try {
-                result = await exactPlanJson(pkg, payload);
+                result = await exactPlanJson(pkg, payload, step);
             } catch (error) {
+                step('backup', 'start');
                 fallbackReason = error && error.message ? error.message : String(error);
                 console.warn('Exact planner failed; using the backup planner instead:', error);
             }

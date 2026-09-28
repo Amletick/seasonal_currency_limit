@@ -2518,3 +2518,69 @@ tr:hover .skip-row,
 .layout-svg .layout-storage-text {
     fill: var(--bg, #111);
 }
+
+/* Progress card under the button: each step of working out a plan. */
+.solve-progress {
+    margin-top: 0.75rem;
+    padding: 0.75rem 1rem;
+}
+
+.progress-steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+}
+
+.progress-step {
+    display: grid;
+    grid-template-columns: 1.1rem 1fr auto;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.progress-step.pending,
+.progress-step.skipped {
+    color: var(--text-muted);
+}
+
+.step-note {
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.step-icon {
+    text-align: center;
+    font-weight: 700;
+}
+
+.step-icon.done {
+    color: var(--accent);
+}
+
+.step-icon.fail {
+    color: #ef4444;
+}
+
+.step-spinner {
+    width: 0.8rem;
+    height: 0.8rem;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: step-spin 0.8s linear infinite;
+    justify-self: center;
+}
+
+@keyframes step-spin {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .step-spinner {
+        animation-duration: 2.4s;
+    }
+}
