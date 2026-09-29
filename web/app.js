@@ -1129,6 +1129,11 @@ function renderHomelandLayout(plan) {
 let layoutShowsWhole = false;
 let lastLayout = null;
 
+// The Storage Unit's flow lines: the busiest piece's dots are this many tiles apart, and every
+// dot walks this many tiles a second.
+const FLOW_SPACING = 1.2;
+const FLOW_PACE = 3;
+
 function homelandSvg(layout, homeLevel) {
     // Each environment building in use covers the 9x9 square around its center, drawn under
     // everything in its mode's color as on the building's own map.
@@ -1187,6 +1192,18 @@ function homelandSvg(layout, homeLevel) {
             stroke="${tint}" stroke-opacity="0.8" stroke-dasharray="0.35,0.25" stroke-width="0.08" />`;
     }).join('');
     const s = layout.storage;
+    // Shown while the Storage Unit is hovered: a line from everything carried to it, with dots
+    // walking it at one pace, spaced so each line's dots arrive as often as its trips do.
+    const sx = s.x + s.w / 2;
+    const sy = s.y + s.h / 2;
+    const carried = layout.pieces.flatMap(p => p.members).filter(m => m.weight > 0);
+    const flows = carried.map(m => {
+        const gap = FLOW_SPACING * maxTrips / m.weight;
+        return `<path d="M${m.x + m.w / 2} ${m.y + m.h / 2} L${sx} ${sy}" class="layout-flow-line" />
+            <path d="M${m.x + m.w / 2} ${m.y + m.h / 2} L${sx} ${sy}" class="layout-flow-dots"
+                style="--gap:${gap.toFixed(3)};stroke-dasharray:0 ${gap.toFixed(3)};animation-duration:${(gap / FLOW_PACE).toFixed(3)}s" />`;
+    }).join('');
+    const totalTrips = carried.reduce((sum, m) => sum + m.weight, 0);
     return `<svg class="layout-svg" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}" role="img" aria-label="Homeland layout">
         <defs><pattern id="layout-locked" width="1" height="1" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
             <line x1="0" y1="0" x2="0" y2="1" class="layout-hatch" /></pattern></defs>
@@ -1195,7 +1212,8 @@ function homelandSvg(layout, homeLevel) {
         <g class="layout-coverage">${coverageShapes}</g>
         ${shapes}
         <g class="layout-coverage-edges" pointer-events="none">${coverageEdges}</g>
-        <g class="layout-piece" ${tipAttrs('Storage Unit', { detail: 'Where everything is carried' })}><rect x="${s.x + 0.04}" y="${s.y + 0.04}" width="${s.w - 0.08}" height="${s.h - 0.08}" rx="0.2" class="layout-storage" />
+        <g class="layout-flows" pointer-events="none">${flows}</g>
+        <g class="layout-piece layout-storage-unit" ${tipAttrs('Storage Unit', { detail: 'Where everything is carried', stats: totalTrips > 0 ? `${formatRate(totalTrips)} trips/hour` : '' })}><rect x="${s.x + 0.04}" y="${s.y + 0.04}" width="${s.w - 0.08}" height="${s.h - 0.08}" rx="0.2" class="layout-storage" />
         <text x="${s.x + s.w / 2}" y="${s.y + s.h / 2}" font-size="0.8" class="layout-storage-text">SU</text></g>
     </svg>`;
 }

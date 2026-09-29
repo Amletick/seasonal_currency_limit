@@ -2545,6 +2545,48 @@ tr:hover .skip-row,
     fill: var(--bg, #111);
 }
 
+/* While the Storage Unit is hovered, what's carried to it (see `homelandSvg`). */
+.layout-flows {
+    display: none;
+}
+
+.layout-svg:has(.layout-storage-unit:hover) .layout-flows {
+    display: inline;
+}
+
+.layout-svg:has(.layout-storage-unit:hover) .layout-piece:not(.layout-storage-unit),
+.layout-svg:has(.layout-storage-unit:hover) .env-building {
+    opacity: 0.55;
+}
+
+.layout-flow-line {
+    stroke: var(--accent);
+    stroke-opacity: 0.45;
+    stroke-width: 0.07;
+}
+
+.layout-flow-dots {
+    stroke: var(--accent);
+    stroke-width: 0.4;
+    stroke-linecap: round;
+    animation: layout-flow linear infinite;
+}
+
+@keyframes layout-flow {
+    from {
+        stroke-dashoffset: var(--gap);
+    }
+    to {
+        stroke-dashoffset: 0;
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .layout-flow-dots {
+        animation: none;
+    }
+}
+
 /* Progress card under the button: each step of working out a plan. */
 .solve-progress {
     margin-top: 0.75rem;
