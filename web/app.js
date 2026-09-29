@@ -1298,21 +1298,36 @@ function layoutFlows(layout, plan) {
 }
 
 // When an item's first batch is ready, from the moment everything is set up: a crop's grow time,
-// or a recipe's own batch time after its slowest ingredient's first batch, as the planner works
-// it out (see `item_lead_time` in optimizer.rs), with the plan's own batch times.
+// or a recipe's own batch time after its slowest ingredient is first there, as the planner works
+// it out (see `item_lead_time` in optimizer.rs), with the plan's own batch times. An ingredient
+// is there once a recipe making it (or making it as a byproduct, like a Mine's Mineral Sand) has
+// its first batch, or from the start if a level-up's stock has some.
 function firstBatchTimes(plan) {
     const batch = new Map();
     (plan.coin_items || []).forEach(s => {
         if (s.status === 'producing' && s.item_name && s.cycle_time > 0) batch.set(s.item_name, Math.min(batch.get(s.item_name) ?? Infinity, s.cycle_time));
     });
-    // An ingredient may be grown as its quick variant.
-    const made = name => (batch.has(name) ? name : batch.has(`quick_${name}`) ? `quick_${name}` : null);
+    const byproductOf = new Map();
+    batch.forEach((_, name) => {
+        const resource = recipeIndex.find(r => r.name === name)?.byproduct;
+        if (resource) byproductOf.set(resource, [...(byproductOf.get(resource) || []), name]);
+    });
+    const stocked = new Set((planContext?.levelUp ? lastPlanInput?.level_up?.stock || [] : []).filter(([, n]) => n > 0).map(([name]) => name));
     const known = new Map();
+    // When `name` is first there as an ingredient, or null if nothing in the plan makes it.
+    const there = (name, depth) => {
+        if (stocked.has(name)) return 0;
+        // An ingredient may be grown as its quick variant.
+        const own = batch.has(name) ? name : batch.has(`quick_${name}`) ? `quick_${name}` : null;
+        if (own) return first(own, depth + 1);
+        const makers = byproductOf.get(name) || [];
+        return makers.length ? Math.min(...makers.map(maker => first(maker, depth + 1))) : null;
+    };
     const first = (name, depth = 0) => {
         if (!name || depth > 8) return 0;
         if (!known.has(name)) {
-            const ingredients = (recipeIndex.find(r => r.name === name)?.ingredients || []).map(made).filter(Boolean);
-            known.set(name, Math.max(0, ...ingredients.map(i => first(i, depth + 1))) + (batch.get(name) || 0));
+            const ingredients = (recipeIndex.find(r => r.name === name)?.ingredients || []).map(i => there(i, depth)).filter(t => t != null);
+            known.set(name, Math.max(0, ...ingredients) + (batch.get(name) || 0));
         }
         return known.get(name);
     };
@@ -1781,7 +1796,7 @@ function recipeLabel(recipe) {
 async function loadRecipeIndex() {
     try {
         recipeIndex = JSON.parse(await callWorker('get_all_items'))
-            .map(r => ({ name: r.name, facility: r.facility, cost: r.cost || 0, seasonSeedCost: r.season_seed_cost || 0, environment: r.environment || null, jobs: r.jobs || [], ingredients: r.raw_materials || [] }))
+            .map(r => ({ name: r.name, facility: r.facility, cost: r.cost || 0, seasonSeedCost: r.season_seed_cost || 0, environment: r.environment || null, jobs: r.jobs || [], ingredients: r.raw_materials || [], byproduct: r.byproduct_item || null }))
             .sort((a, b) => a.facility.localeCompare(b.facility) || a.name.localeCompare(b.name));
         document.getElementById('skip-options').innerHTML =
             recipeIndex.map(r => `<option value="${recipeLabel(r)}"></option>`).join('');
