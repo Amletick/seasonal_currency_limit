@@ -1029,11 +1029,11 @@ function homelandPieces(plan, input) {
             // Each plot in this zone gets one of the crops planned for its facility here.
             const crops = {};
             rows.forEach(r => {
-                for (let n = 0; n < r.facility_count; n++) (crops[r.facility] ||= []).push({ crop: r.item_name, trips: tripsPerUnit(r) });
+                for (let n = 0; n < r.facility_count; n++) (crops[r.facility] ||= []).push({ crop: r.item_name, trips: tripsPerUnit(r), cycle: r.cycle_time });
             });
             layout.forEach(p => {
                 const crop = (crops[p.facility] || []).shift() || { crop: null, trips: 0 };
-                plots.push({ w: p.size, h: p.size, weight: crop.trips, zone: unit.partner ? zone : 0, facility: p.facility, crop: crop.crop });
+                plots.push({ w: p.size, h: p.size, weight: crop.trips, cycle: crop.cycle, zone: unit.partner ? zone : 0, facility: p.facility, crop: crop.crop });
                 planned.push({ x: p.x, y: p.y });
                 count(p.facility);
                 placedInBlocks[`${p.facility}|${crop.crop}`] = (placedInBlocks[`${p.facility}|${crop.crop}`] || 0) + 1;
@@ -1060,7 +1060,7 @@ function homelandPieces(plan, input) {
             // A crop that needs an environment but is grown without one stays out of every
             // coverage square, so no building's temperature changes it.
             const growing = step.status === 'producing';
-            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: tripsPerUnit(step), facility: step.facility, crop: growing ? step.item_name : null, sensitive: growing && needsEnvironment(step.item_name) }] });
+            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: tripsPerUnit(step), cycle: step.cycle_time, facility: step.facility, crop: growing ? step.item_name : null, sensitive: growing && needsEnvironment(step.item_name) }] });
         }
         count(step.facility, n);
     });
@@ -1125,7 +1125,8 @@ function attachLayoutHandlers() {
 function drawLayout(drawn) {
     const diagram = document.getElementById('layout-diagram');
     diagram.innerHTML = homelandSvg(drawn.layout, drawn.homeLevel);
-    startLayoutSim(diagram.querySelector('.layout-svg'), layoutFlows(drawn.layout, drawn.plan));
+    const stock = new Map(planContext?.levelUp ? lastPlanInput?.level_up?.stock || [] : []);
+    startLayoutSim(diagram.querySelector('.layout-svg'), layoutFlows(drawn.layout), stock);
 }
 
 function renderHomelandLayout(plan) {
@@ -1253,9 +1254,12 @@ function homelandSvg(layout, homeLevel) {
             stroke="${tint}" stroke-opacity="0.8" stroke-dasharray="0.35,0.25" stroke-width="0.08" />`;
     }).join('');
     const s = layout.storage;
-    // A line from everything carried to the Storage Unit, each drawn once its first batch is in
-    // (see `startLayoutSim`), in the same order as `layoutFlows`.
-    const flows = layoutFlows(layout).map(f => `<line x1="${f.x1}" y1="${f.y1}" x2="${f.x2}" y2="${f.y2}" class="layout-flow-line" />`).join('');
+    // A line from everything carried to the Storage Unit, each drawn once its first batch is in,
+    // and a ring for the batch it's on (see "Deliveries"), in the same order as `layoutFlows`.
+    const flowList = layoutFlows(layout);
+    const flows = flowList.map(f => `<line x1="${f.x1}" y1="${f.y1}" x2="${f.x2}" y2="${f.y2}" class="layout-flow-line" />`).join('');
+    const rings = flowList.map(f => `<g class="layout-ring" transform="translate(${f.rx.toFixed(2)} ${f.ry.toFixed(2)})">
+            <circle r="${f.ring.toFixed(2)}" class="ring-track" /><circle r="${f.ring.toFixed(2)}" class="ring-fill" pathLength="1" stroke-dasharray="0 1" transform="rotate(-90)" /></g>`).join('');
     const totalTrips = layout.pieces.flatMap(p => p.members).reduce((sum, m) => sum + (m.weight || 0), 0);
     return `<svg class="layout-svg" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}" role="img" aria-label="Homeland layout">
         <defs><pattern id="layout-locked" width="1" height="1" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
@@ -1265,6 +1269,7 @@ function homelandSvg(layout, homeLevel) {
         <g class="layout-coverage">${coverageShapes}</g>
         ${shapes}
         <g class="layout-coverage-edges" pointer-events="none">${coverageEdges}</g>
+        <g class="layout-rings" pointer-events="none">${rings}</g>
         <g class="layout-flows" pointer-events="none">${flows}<g class="layout-dots"></g></g>
         <g class="layout-piece layout-storage-unit" ${tipAttrs('Storage Unit', { detail: 'Where everything is carried', stats: totalTrips > 0 ? `${formatRate(totalTrips)} trips/hour` : '' })}><rect x="${s.x + 0.04}" y="${s.y + 0.04}" width="${s.w - 0.08}" height="${s.h - 0.08}" rx="0.2" class="layout-storage" />
         <text x="${s.x + s.w / 2}" y="${s.y + s.h / 2}" font-size="0.8" class="layout-storage-text">SU</text></g>
@@ -1272,81 +1277,99 @@ function homelandSvg(layout, homeLevel) {
 }
 
 // --- Deliveries ------------------------------------------------------------------------
-// The layout plays out its deliveries in sped-up game time, from the moment everything is set
-// up: each piece sends its first batch to the Storage Unit when that's ready, and one more every
-// batch after, as often as its trips per hour say.
+// The layout plays its homeland out in sped-up game time, from the moment everything is set up.
+// Every finished batch is carried to the Storage Unit, with its byproduct, and adds to what's
+// there; a recipe starts a batch only once the Storage Unit has all it takes, and takes it out.
+// Each unit also keeps to the plan's pace for it, so it doesn't take more than its share of what
+// others need. A ring on each shows its batch, amber while it waits for materials. What isn't
+// modeled: the walk to the Storage Unit and back (dots walk at a fixed pace), and which of two
+// recipes wanting the same thing gets it first (they take turns at random).
 
-// Every piece has sent its first batch within this many real seconds, however long that takes in
-// game (at least a minute a second, at most an hour).
+// Every piece has sent its first batch within about this many real seconds, however long that
+// takes in game (at least a minute a second, at most an hour).
 const SIM_BUILD_UP = 10;
 // Tiles a second a delivery walks, in real time.
 const SIM_PACE = 4;
+// Game seconds per step of the simulation.
+const SIM_STEP = 2;
 let layoutSim = null;
 
-// Each piece carried to the Storage Unit: its line, when its first batch is ready (game
-// seconds; none without `plan`) and the seconds between its deliveries.
-function layoutFlows(layout, plan) {
+// Each piece carried to the Storage Unit: its line and ring, what it makes and how long a batch
+// takes, and its pace in the plan (batches a second).
+function layoutFlows(layout) {
     const s = layout.storage;
     const x2 = s.x + s.w / 2;
     const y2 = s.y + s.h / 2;
-    const firstBatch = plan ? firstBatchTimes(plan) : () => 0;
-    return layout.pieces.flatMap(p => p.members).filter(m => m.weight > 0).map(m => {
+    return layout.pieces.flatMap(p => p.members).filter(m => m.weight > 0 && m.crop && m.cycle > 0).map(m => {
         const x1 = m.x + m.w / 2;
         const y1 = m.y + m.h / 2;
-        return { x1, y1, x2, y2, length: Math.hypot(x2 - x1, y2 - y1), start: firstBatch(m.crop), period: 3600 / m.weight };
+        const ring = Math.min(0.45, Math.min(m.w, m.h) * 0.22);
+        return {
+            x1, y1, x2, y2, length: Math.hypot(x2 - x1, y2 - y1),
+            ring, rx: m.x + m.w - ring - 0.12, ry: m.y + ring + 0.12,
+            item: m.crop, cycle: m.cycle, rate: m.weight / 3600,
+        };
     });
 }
 
-// When an item's first batch is ready, from the moment everything is set up: a crop's grow time,
-// or a recipe's own batch time after its slowest ingredient is first there, as the planner works
-// it out (see `item_lead_time` in optimizer.rs), with the plan's own batch times. An ingredient
-// is there once a recipe making it (or making it as a byproduct, like a Mine's Mineral Sand) has
-// its first batch, or from the start if a level-up's stock has some.
-function firstBatchTimes(plan) {
-    const batch = new Map();
-    (plan.coin_items || []).forEach(s => {
-        if (s.status === 'producing' && s.item_name && s.cycle_time > 0) batch.set(s.item_name, Math.min(batch.get(s.item_name) ?? Infinity, s.cycle_time));
-    });
-    const byproductOf = new Map();
-    batch.forEach((_, name) => {
-        const resource = recipeIndex.find(r => r.name === name)?.byproduct;
-        if (resource) byproductOf.set(resource, [...(byproductOf.get(resource) || []), name]);
-    });
-    const stocked = new Set((planContext?.levelUp ? lastPlanInput?.level_up?.stock || [] : []).filter(([, n]) => n > 0).map(([name]) => name));
-    const known = new Map();
-    // When `name` is first there as an ingredient, or null if nothing in the plan makes it.
-    const there = (name, depth) => {
-        if (stocked.has(name)) return 0;
-        // An ingredient may be grown as its quick variant.
-        const own = batch.has(name) ? name : batch.has(`quick_${name}`) ? `quick_${name}` : null;
-        if (own) return first(own, depth + 1);
-        const makers = byproductOf.get(name) || [];
-        return makers.length ? Math.min(...makers.map(maker => first(maker, depth + 1))) : null;
+// What a recipe takes and gives, from the recipe list: ingredients with amounts, its item and
+// yield (a quick variant makes the regular item), and its byproduct.
+function recipeTerms(name) {
+    const r = recipeIndex.find(r => r.name === name);
+    return {
+        takes: (r?.ingredients || []).map((ingredient, i) => [ingredient, r.amounts?.[i] ?? 1]),
+        makes: name.replace(/^quick_/, ''),
+        yield: r?.yieldAmount || 1,
+        byproduct: r?.byproduct ? [r.byproduct, r.byproductAmount || 0] : null,
     };
+}
+
+// When an item's first batch could be ready, from the moment everything is set up: a crop's grow
+// time, or a recipe's own batch time after its slowest ingredient is first there, as the planner
+// works it out (see `item_lead_time` in optimizer.rs). Only sets the simulation's speed.
+function firstBatchTimes(flows) {
+    const batch = new Map();
+    flows.forEach(f => batch.set(f.item, Math.min(batch.get(f.item) ?? Infinity, f.cycle)));
+    const makers = new Map();
+    batch.forEach((_, name) => {
+        const terms = recipeTerms(name);
+        [terms.makes, terms.byproduct?.[0]].filter(Boolean).forEach(item => makers.set(item, [...(makers.get(item) || []), name]));
+    });
+    const known = new Map();
     const first = (name, depth = 0) => {
-        if (!name || depth > 8) return 0;
+        if (depth > 8) return 0;
         if (!known.has(name)) {
-            const ingredients = (recipeIndex.find(r => r.name === name)?.ingredients || []).map(i => there(i, depth)).filter(t => t != null);
-            known.set(name, Math.max(0, ...ingredients) + (batch.get(name) || 0));
+            const waits = recipeTerms(name).takes
+                .map(([ingredient]) => makers.get(ingredient))
+                .filter(Boolean)
+                .map(list => Math.min(...list.map(m => first(m, depth + 1))));
+            known.set(name, Math.max(0, ...waits) + (batch.get(name) || 0));
         }
         return known.get(name);
     };
     return first;
 }
 
-function startLayoutSim(svg, flows) {
+function startLayoutSim(svg, flows, stock) {
     stopLayoutSim();
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     document.getElementById('layout-sim').hidden = !svg || flows.length === 0 || reduce;
     if (!svg || flows.length === 0) return;
     const lines = [...svg.querySelectorAll('.layout-flow-line')];
+    const rings = [...svg.querySelectorAll('.layout-ring')];
     if (reduce) {
         lines.forEach(line => line.classList.add('live'));
+        rings.forEach(ring => ring.remove());
         return;
     }
-    const latest = Math.max(...flows.map(f => f.start));
+    const first = firstBatchTimes(flows);
+    const latest = Math.max(...flows.map(f => first(f.item)));
     const speed = Math.min(3600, Math.max(60, latest / SIM_BUILD_UP));
-    const sim = { svg, flows, lines, speed, layer: svg.querySelector('.layout-dots'), dots: [], frame: 0, visible: true };
+    const units = flows.map((flow, k) => ({ flow, terms: recipeTerms(flow.item), line: lines[k], ring: rings[k], fill: rings[k]?.querySelector('.ring-fill') }));
+    // Something no piece here makes, and no stock covers, is taken as always there, so a recipe
+    // using it isn't held up forever.
+    const made = new Set(units.flatMap(u => [u.terms.makes, u.terms.byproduct?.[0]].filter(Boolean)));
+    const sim = { svg, units, speed, stock, made, layer: svg.querySelector('.layout-dots'), dots: [], frame: 0, visible: true };
     layoutSim = sim;
     document.getElementById('layout-clock').title = `Game time since everything was set up, at ${formatNumber(Math.round(speed))}× speed`;
     // Only plays while the diagram is on screen.
@@ -1361,10 +1384,15 @@ function startLayoutSim(svg, flows) {
 function resetLayoutSim(sim) {
     sim.game = 0;
     sim.last = null;
-    sim.next = sim.flows.map(f => f.start);
+    sim.store = new Map(sim.stock);
+    sim.units.forEach(unit => {
+        unit.pace = 1;
+        unit.until = null;
+        unit.line?.classList.remove('live');
+        showRing(unit, 0, false);
+    });
     sim.dots.forEach(dot => dot.el.remove());
     sim.dots = [];
-    sim.lines.forEach(line => line.classList.remove('live'));
     showSimClock(0);
     if (!sim.frame) sim.frame = requestAnimationFrame(now => tickLayoutSim(sim, now));
 }
@@ -1376,31 +1404,67 @@ function stopLayoutSim() {
     layoutSim = null;
 }
 
+// Whether the Storage Unit has what `unit` needs for a batch.
+function simHas(sim, unit) {
+    return unit.terms.takes.every(([item, n]) => !sim.made.has(item) && !sim.stock.has(item) || (sim.store.get(item) || 0) >= n);
+}
+
+function stepLayoutSim(sim, dt) {
+    sim.game += dt;
+    // Recipes wanting the same thing take turns at random.
+    const order = [...sim.units];
+    for (let i = order.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+    }
+    for (const unit of order) {
+        unit.pace = Math.min(1, unit.pace + unit.flow.rate * dt);
+        if (unit.until != null && sim.game >= unit.until) {
+            const { makes, byproduct } = unit.terms;
+            sim.store.set(makes, (sim.store.get(makes) || 0) + unit.terms.yield);
+            if (byproduct) sim.store.set(byproduct[0], (sim.store.get(byproduct[0]) || 0) + byproduct[1]);
+            deliver(sim, unit, (sim.game - unit.until) / sim.speed);
+            unit.until = null;
+        }
+        if (unit.until == null && unit.pace >= 1 - 1e-9 && simHas(sim, unit)) {
+            unit.terms.takes.forEach(([item, n]) => {
+                if (sim.made.has(item) || sim.stock.has(item)) sim.store.set(item, (sim.store.get(item) || 0) - n);
+            });
+            unit.pace -= 1;
+            unit.started = sim.game;
+            unit.until = sim.game + unit.flow.cycle;
+        }
+    }
+}
+
+function deliver(sim, unit, age) {
+    unit.line?.classList.add('live');
+    const walk = unit.flow.length / SIM_PACE;
+    if (age >= walk) return;
+    const el = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    el.setAttribute('r', '0.2');
+    el.setAttribute('class', 'layout-dot');
+    sim.layer.appendChild(el);
+    sim.dots.push({ el, flow: unit.flow, age });
+}
+
+function showRing(unit, progress, waiting) {
+    if (!unit.ring) return;
+    unit.fill.setAttribute('stroke-dasharray', `${progress.toFixed(3)} 1`);
+    unit.ring.classList.toggle('waiting', waiting);
+}
+
 function tickLayoutSim(sim, now) {
     sim.frame = 0;
     if (layoutSim !== sim || !sim.svg.isConnected) return;
     // A long gap between frames (a hidden tab) isn't counted as time passing.
     const dt = sim.last == null ? 0 : Math.min(now - sim.last, 100) / 1000;
     sim.last = now;
-    sim.game += dt * sim.speed;
-    sim.flows.forEach((flow, k) => {
-        const walk = flow.length / SIM_PACE;
-        // Batches that would already have arrived aren't drawn.
-        if (sim.next[k] < sim.game - walk * sim.speed) {
-            sim.next[k] += Math.floor((sim.game - walk * sim.speed - sim.next[k]) / flow.period) * flow.period;
-        }
-        while (sim.next[k] <= sim.game) {
-            sim.lines[k].classList.add('live');
-            const age = (sim.game - sim.next[k]) / sim.speed;
-            if (age < walk) {
-                const el = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-                el.setAttribute('r', '0.3');
-                el.setAttribute('class', 'layout-dot');
-                sim.layer.appendChild(el);
-                sim.dots.push({ el, flow, age });
-            }
-            sim.next[k] += flow.period;
-        }
+    const until = sim.game + dt * sim.speed;
+    while (sim.game < until - 1e-9) stepLayoutSim(sim, Math.min(SIM_STEP, until - sim.game));
+    sim.units.forEach(unit => {
+        const busy = unit.until != null;
+        showRing(unit, busy ? Math.min(1, (sim.game - unit.started) / unit.flow.cycle) : 0, !busy && unit.pace >= 1 - 1e-9);
     });
     sim.dots = sim.dots.filter(dot => {
         dot.age += dt;
@@ -1796,7 +1860,7 @@ function recipeLabel(recipe) {
 async function loadRecipeIndex() {
     try {
         recipeIndex = JSON.parse(await callWorker('get_all_items'))
-            .map(r => ({ name: r.name, facility: r.facility, cost: r.cost || 0, seasonSeedCost: r.season_seed_cost || 0, environment: r.environment || null, jobs: r.jobs || [], ingredients: r.raw_materials || [], byproduct: r.byproduct_item || null }))
+            .map(r => ({ name: r.name, facility: r.facility, cost: r.cost || 0, seasonSeedCost: r.season_seed_cost || 0, environment: r.environment || null, jobs: r.jobs || [], ingredients: r.raw_materials || [], amounts: r.required_amount || [], yieldAmount: r.yield_amount || 1, byproduct: r.byproduct_item || null, byproductAmount: r.byproduct?.[1] || 0 }))
             .sort((a, b) => a.facility.localeCompare(b.facility) || a.name.localeCompare(b.name));
         document.getElementById('skip-options').innerHTML =
             recipeIndex.map(r => `<option value="${recipeLabel(r)}"></option>`).join('');

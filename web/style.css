@@ -2515,6 +2515,27 @@ tr:hover .skip-row,
     fill: var(--accent);
 }
 
+/* A piece's batch: the fill goes round as it works, and the ring turns amber while it waits for
+   materials. */
+.layout-ring circle {
+    fill: none;
+    stroke-width: 0.12;
+}
+
+.layout-ring .ring-track {
+    stroke: var(--bg);
+    stroke-opacity: 0.55;
+}
+
+.layout-ring .ring-fill {
+    stroke: var(--text);
+}
+
+.layout-ring.waiting .ring-track {
+    stroke: var(--warning);
+    stroke-opacity: 0.9;
+}
+
 .layout-controls {
     display: flex;
     flex-wrap: wrap;
