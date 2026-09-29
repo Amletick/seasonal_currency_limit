@@ -230,9 +230,13 @@ pub fn no_personality_efficiency(level: u32, required: u32) -> f64 {
 /// [`add_uncovered_variants`]).
 pub const UNCOVERED_SUFFIX: &str = "__uncovered";
 
-/// The crop behind an item name, which is the name itself unless it's an uncovered variant.
+/// The recipe or crop behind an item name: the name without a roster copy's `__by<member>` (see
+/// [`crew_variants`]) or an uncovered variant's suffix.
 pub fn base_item_name(name: &str) -> &str {
-    let name = name.split(CREW_SUFFIX).next().unwrap_or(name);
+    let name = match name.rsplit_once(CREW_SUFFIX) {
+        Some((base, member)) if !member.is_empty() && member.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => name,
+    };
     name.strip_suffix(UNCOVERED_SUFFIX).unwrap_or(name)
 }
 
@@ -274,11 +278,6 @@ pub struct Crew {
 }
 
 impl Crew {
-    /// The roster member a recipe copy made by [`crew_variants`] is worked by.
-    pub fn member_of(item: &ProductionItem) -> Option<usize> {
-        item.crew
-    }
-
     /// The Aniimo `member` works `item` as: its level at the recipe's ability, and whether it has
     /// the facility's personality.
     pub fn worker(&self, member: usize, item: &ProductionItem, requirements: &AniimoRequirements) -> Option<Worker> {
@@ -315,6 +314,7 @@ pub fn crew_variants(
     for mut item in items {
         match (item.workload, requirements.get(base_item_name(&item.name))) {
             (Some(workload), Some((ability, required))) => {
+                let mut fastest = f64::INFINITY;
                 for (member, aniimo) in crew.members.iter().enumerate() {
                     if aniimo.count == 0 || aniimo.level(ability) < required {
                         continue;
@@ -326,9 +326,15 @@ pub fn crew_variants(
                     };
                     let worker = crew.worker(member, &variant, requirements).expect("a member that can work it");
                     variant.production_time = worker.seconds_for_item(&variant, workload, required);
+                    fastest = fastest.min(variant.production_time);
                     out.push(variant);
                 }
+                // Kept for its price and timing only: the wait for a first batch is the fastest
+                // member's.
                 item.facility_level = u32::MAX;
+                if fastest.is_finite() {
+                    item.production_time = fastest;
+                }
                 out.push(item);
             }
             (None, _) if item.production_time > 0.0 && item.raw_materials.is_none() => {

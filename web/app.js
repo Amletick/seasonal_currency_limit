@@ -42,6 +42,8 @@ function initWorker() {
     };
     worker.onerror = (event) => {
         console.error('Worker error:', event.message || event);
+        pendingWorkerRequests.forEach(pending => pending.reject(new Error(event.message || 'The planner stopped')));
+        pendingWorkerRequests.clear();
     };
 }
 
@@ -55,11 +57,10 @@ function restartWorker() {
 }
 
 // Sends one request to the worker and resolves with its result (or rejects with its error);
-// `type` matches a key in worker.js's `HANDLERS` (or `'find_plan'`, handled specially there),
-// `payload` is that function's own single string argument (omit for `get_version`/
-// `get_all_items`, which take none). `onProgress(count)`, if given, is called for every
-// intermediate progress message the request receives before its final result (currently only
-// `find_plan` sends any); see worker.js.
+// `type` is one of worker.js's `HANDLER_NAMES` or `'find_plan'`, and `payload` that function's
+// own single string argument (omit for `get_version`/`get_all_items`, which take none).
+// `onProgress(count)`, if given, gets each progress message before the result: `find_plan`
+// sends every solve step and, from the backup planner, its trial count; see worker.js.
 function callWorker(type, payload, onProgress) {
     return new Promise((resolve, reject) => {
         const id = ++nextRequestId;
@@ -121,6 +122,10 @@ function selectedAniimoSetup() {
     const tab = selectedSetupTab();
     if (tab === 'minimum') return 'minimum';
     if (tab === 'custom') return `roster:${JSON.stringify(roster.map(({ name, ...aniimo }) => aniimo))}`;
+    return bestAniimoSetup();
+}
+
+function bestAniimoSetup() {
     return `best:${levelledAbilities().map(a => `${a}${bestAniimoLevel(a)}`).join(',')}`;
 }
 
@@ -129,19 +134,36 @@ function selectedAniimoSetup() {
 let lastPlanInput = null;
 
 // Solves for `setup` if it isn't already worked out, and shows it when it lands if that's still
-// what's selected. A run id guards against a newer Find the best plan click.
+// what's selected. It runs in a worker of its own, which a newer pick stops, so quick roster
+// edits don't queue a solve each. A run id guards against a newer Find the best plan click.
+let setupSolve = null;
 function ensurePlanFor(setup) {
-    if (plansBySetup[setup] || !lastPlanInput) return;
+    if (plansBySetup[setup] || !lastPlanInput || setupSolve?.setup === setup) return;
+    stopSetupSolve();
     const runId = planRunId;
+    const solver = new Worker(WORKER_URL, { type: 'module' });
+    setupSolve = { setup, worker: solver };
+    const done = (plan) => {
+        solver.terminate();
+        if (setupSolve?.worker === solver) setupSolve = null;
+        if (runId !== planRunId) return;
+        plansBySetup[setup] = plan;
+        if (selectedAniimoSetup() === setup) showSelectedPlan();
+    };
+    solver.onmessage = (event) => {
+        const { type, ok, result, error } = event.data;
+        if (type === 'progress') return;
+        done(ok ? JSON.parse(result) : { success: false, error });
+    };
+    solver.onerror = (event) => done({ success: false, error: event.message || 'The planner stopped' });
     // The levels are read afresh: the player may have changed which abilities they have since
     // the plan this input came from.
-    callWorker('find_plan', JSON.stringify({ ...lastPlanInput, ...aniimoInput(setup) }))
-        .then(json => {
-            if (runId !== planRunId) return;
-            plansBySetup[setup] = JSON.parse(json);
-            if (selectedAniimoSetup() === setup) showSelectedPlan();
-        })
-        .catch(error => console.warn('Could not work out the', setup, 'setup:', error));
+    solver.postMessage({ id: 1, type: 'find_plan', payload: JSON.stringify({ ...lastPlanInput, ...aniimoInput(setup) }) });
+}
+
+function stopSetupSolve() {
+    setupSolve?.worker.terminate();
+    setupSolve = null;
 }
 
 // Shows the selected setup, and works it out first if this is the first time it's been asked for.
@@ -155,6 +177,8 @@ function showSelectedPlan() {
     const setup = selectedAniimoSetup();
     const plan = plansBySetup[setup];
     const pending = document.getElementById('aniimo-pending');
+    const content = document.getElementById('results-content');
+    content.classList.toggle('stale', !plan);
     if (!plan) {
         pending.style.display = 'block';
         return;
@@ -420,14 +444,20 @@ function loadInputsFromStorage(data) {
             .map(target => ({ target, on: target === first }));
         data['strategy-priorities'] = true;
     }
-    if (data.aniimoLevels && typeof data.aniimoLevels === 'object') aniimoLevels = { ...data.aniimoLevels };
+    if (data.aniimoLevels && typeof data.aniimoLevels === 'object') {
+        aniimoLevels = Object.fromEntries(Object.entries(data.aniimoLevels)
+            .filter(([ability, level]) => ABILITY_BY_NAME.has(ability) && Number.isInteger(Number(level)) && level >= 1 && level <= 4)
+            .map(([ability, level]) => [ability, Number(level)]));
+    }
     if (Array.isArray(data.roster)) {
         roster = data.roster
             .filter(a => a && typeof a === 'object' && a.abilities && typeof a.abilities === 'object')
             .map(a => ({
                 name: typeof a.name === 'string' ? a.name : '',
-                count: Math.max(1, Number(a.count) || 1),
-                abilities: Object.fromEntries(Object.entries(a.abilities).filter(([, l]) => l >= 1 && l <= 4).map(([ab, l]) => [ab, Number(l)])),
+                count: Math.max(1, Math.round(Number(a.count)) || 1),
+                abilities: Object.fromEntries(Object.entries(a.abilities)
+                    .filter(([ability, level]) => ABILITY_BY_NAME.has(ability) && Number.isInteger(Number(level)) && level >= 1 && level <= 4)
+                    .map(([ability, level]) => [ability, Number(level)])),
                 personalities: PERSONALITY_PAIRS.map((pair, p) => pair.names.includes(a.personalities?.[p]) ? a.personalities[p] : pair.names[0]),
             }));
     }
@@ -659,7 +689,7 @@ function improvementCandidates(base, setup) {
     const owns = name => tierCount(base.facilities[name]) > 0;
 
     // Recipes the player hasn't unlocked, at a facility they have.
-    const skipped = new Set(skippedRecipes);
+    const skipped = new Set(planContext?.skipped ?? skippedRecipes);
     const locked = [
         ...SPECIAL_RECIPES.map(r => ({ ...r, note: false })),
         ...(base.season ? SEASON.recipeNotes.map(r => ({ ...r, note: true })) : []),
@@ -683,7 +713,6 @@ function improvementCandidates(base, setup) {
         });
     }
 
-    // An Aniimo a level higher, up to the highest level the game is known to have.
     // Every level above the one given is tried, here and below, since one level can gain nothing
     // while the next gains a lot.
     const levelsAbove = (from, to) => Array.from({ length: Math.max(0, to - from) }, (_, i) => from + 1 + i);
@@ -696,7 +725,7 @@ function improvementCandidates(base, setup) {
             for (const next of levelsAbove(level, defaultLevelFor(ability))) {
                 candidates.push({
                     kind: 'Aniimo', group: `aniimo:${ability}`, family: `${ability} Aniimo`, level: next,
-                    label: `${ability} Aniimo Lv ${next}`,
+                    label: `${ability} Aniimo Lv.${next}`,
                     input: { ...base, aniimo_levels: { ...base.aniimo_levels, [ability]: next } },
                 });
             }
@@ -705,13 +734,13 @@ function improvementCandidates(base, setup) {
 
     // Advanced mode: a module at a higher level, one more facility, or one facility at a higher
     // level, within what the RV level covering the rest allows.
-    if (!isSimpleMode()) {
+    if (planContext && !planContext.simple) {
         const allowed = simpleSetup(homeLevelCovering(base));
         for (const [module, level] of Object.entries(base.modules)) {
             for (const next of levelsAbove(level, allowed.modules[module] ?? 0)) {
                 candidates.push({
                     kind: 'Modules', group: `module:${module}`, family: MODULE_NAMES[module] || module, level: next,
-                    label: `${MODULE_NAMES[module] || module} Lv ${next}`,
+                    label: `${MODULE_NAMES[module] || module} Lv.${next}`,
                     input: { ...base, modules: { ...base.modules, [module]: next } },
                 });
             }
@@ -725,7 +754,7 @@ function improvementCandidates(base, setup) {
                     candidates.push({
                         kind: 'Facilities', group: `another:${f.name}`, family: `+1 ${f.name}`,
                         level: f.hasLevels === false || capLevel === 1 ? null : level,
-                        label: f.hasLevels === false || capLevel === 1 ? `+1 ${f.name}` : `+1 ${f.name} (Lv ${level})`,
+                        label: f.hasLevels === false || capLevel === 1 ? `+1 ${f.name}` : `+1 ${f.name} (Lv.${level})`,
                         input: { ...base, facilities: { ...base.facilities, [f.name]: [...tiers, { count: 1, level }] } },
                     });
                 }
@@ -740,7 +769,7 @@ function improvementCandidates(base, setup) {
                 candidates.push({
                     kind: 'Facilities', group: `upgrade:${f.name}`, level,
                     family: tierCount(tiers) > 1 ? `1 ${f.name} to` : `${f.name} to`,
-                    label: tierCount(tiers) > 1 ? `1 ${f.name} to Lv ${level}` : `${f.name} to Lv ${level}`,
+                    label: tierCount(tiers) > 1 ? `1 ${f.name} to Lv.${level}` : `${f.name} to Lv.${level}`,
                     input: { ...base, facilities: { ...base.facilities, [f.name]: raised } },
                 });
             }
@@ -756,6 +785,7 @@ function rankImprovementsFor(setup) {
     if (rankingsBySetup[setup]) {
         ranking = rankingsBySetup[setup];
         renderImprovements();
+        setStep('improve', 'done', `${ranking.candidates.length} changes`);
         return;
     }
     setStep('improve', 'start');
@@ -764,7 +794,7 @@ function rankImprovementsFor(setup) {
     const candidates = improvementCandidates(base, setup);
     ranking = {
         setup, measure, candidates, base: null, results: [], done: false,
-        homeLevel: isSimpleMode() ? null : homeLevelCovering(base),
+        homeLevel: planContext?.simple ? null : homeLevelCovering(base),
     };
     renderImprovements();
     if (candidates.length === 0) {
@@ -791,15 +821,28 @@ function rankImprovementsFor(setup) {
                 else current.results[indices[result.index]] = result;
                 setStep('improve', 'start', `${current.results.filter(Boolean).length} of ${candidates.length}`);
             } else {
-                failed ||= !ok;
-                worker.terminate();
-                if (--running === 0) {
-                    current.done = true;
-                    if (!failed) rankingsBySetup[setup] = current;
-                    setStep('improve', failed ? 'fail' : 'done', `${candidates.length} changes`);
-                    rankWorkers = [];
-                }
+                if (!ok) console.warn('Ranking changes failed:', event.data.error);
+                finish(!ok);
             }
+            if (ranking === current) renderImprovements();
+        };
+        let finished = false;
+        const finish = (fail) => {
+            if (finished) return;
+            finished = true;
+            failed ||= fail;
+            worker.terminate();
+            if (--running === 0) {
+                current.done = true;
+                if (!failed) rankingsBySetup[setup] = current;
+                setStep('improve', failed ? 'fail' : 'done', `${candidates.length} changes`);
+                rankWorkers = [];
+            }
+        };
+        worker.onerror = (event) => {
+            if (runId !== rankRunId) return;
+            console.warn('Ranking changes failed:', event.message || event);
+            finish(true);
             if (ranking === current) renderImprovements();
         };
         worker.postMessage({
@@ -867,7 +910,7 @@ function renderImprovements() {
     card.style.display = 'block';
     const checked = ranking.results.filter(Boolean).length;
     const total = ranking.candidates.length;
-    const within = ranking.homeLevel ? ` RV ${ranking.homeLevel} limits.` : '';
+    const within = ranking.homeLevel ? ` Within RV ${ranking.homeLevel} limits.` : '';
     const by = ranking.measure === 'level_up' ? 'level-up time, then Home Coins'
         : ranking.measure === 'coins' ? 'Home Coins' : `${priorityLabel(ranking.measure, planContext?.aniipod)}, then Home Coins`;
     // One row per change, or per group: the least of it that gets the most it can (see
@@ -896,7 +939,7 @@ function renderImprovements() {
 
 // Everything the ranking tries, by kind, each with how it came out: the gain, "no gain", or
 // still to check, behind `status`. A change tried at several levels is one line, e.g. "Earth
-// Aniimo Lv 2–4".
+// Aniimo Lv.2–4".
 function improvementsChecked(best, status, open) {
     if (!ranking.candidates.length) return `<p class="hint">${status}</p>`;
     const groups = new Map();
@@ -911,12 +954,12 @@ function improvementsChecked(best, status, open) {
         const first = group.candidates[0];
         const levels = group.candidates.map(c => c.level).filter(l => l != null);
         const name = first.family
-            ? `${first.family}${levels.length ? ` Lv ${levels.length > 1 ? `${levels[0]}–${levels[levels.length - 1]}` : levels[0]}` : ''}`
+            ? `${first.family}${levels.length ? ` Lv.${levels.length > 1 ? `${levels[0]}–${levels[levels.length - 1]}` : levels[0]}` : ''}`
             : first.label;
         const done = group.indices.every(i => ranking.results[i]);
         const found = best.get(key);
         const outcome = found
-            ? `<span class="improve-gain">${found.candidate.level != null && levels.length > 1 ? `Lv ${found.candidate.level}: ` : ''}${found.gain.text}</span>`
+            ? `<span class="improve-gain">${found.candidate.level != null && levels.length > 1 ? `Lv.${found.candidate.level}: ` : ''}${found.gain.text}</span>`
             : `<span class="improve-none">${done ? 'no gain' : 'checking…'}</span>`;
         if (!kinds.has(group.kind)) kinds.set(group.kind, []);
         kinds.get(group.kind).push(`<li><span>${name}</span>${outcome}</li>`);
@@ -1083,6 +1126,7 @@ function renderHomelandLayout(plan) {
         return;
     }
     const runId = ++layoutRunId;
+    lastLayout = null;
     setStep('layout', 'start');
     card.style.display = 'block';
     document.getElementById('layout-summary').textContent = 'Laying out…';
@@ -1120,9 +1164,20 @@ function renderHomelandLayout(plan) {
     };
     layoutWorker.onerror = (event) => {
         console.error('Homeland layout failed:', event.message || event);
-        if (runId === layoutRunId) setStep('layout', 'fail');
+        if (runId !== layoutRunId) return;
+        stopLayout();
+        document.getElementById('layout-summary').textContent = 'The layout couldn\'t be worked out.';
+        setStep('layout', 'fail');
     };
     layoutWorker.postMessage({ pieces, cells: cells.map(({ x, y, w, h }) => ({ x, y, w, h })) });
+}
+
+// Stops a layout still being worked out, so it can't land over a newer plan.
+function stopLayout() {
+    layoutRunId++;
+    layoutWorker?.terminate();
+    layoutWorker = null;
+    lastLayout = null;
 }
 
 // Whether the layout shows the whole homeland rather than just what's placed; the player's toggle.
@@ -1263,7 +1318,7 @@ function setStep(key, state, detail, proven) {
     }
     let step = progress.steps.find(s => s.key === key);
     if (!step && key === 'backup') {
-        step = { key, label: 'Backup planner', state: 'pending' };
+        step = { key, label: 'Backup Planner', state: 'pending' };
         progress.steps.splice(progress.steps.findIndex(s => s.key === 'layout'), 0, step);
     }
     if (!step) return;
@@ -1393,17 +1448,22 @@ function renderRoster() {
 }
 
 // When the roster can't make a plan: keeps the Aniimo card, and its editor, on screen so the
-// player can add to it, and hides the rest.
+// player can add to it.
 function showRosterShortfall() {
     document.getElementById('error-message').style.display = 'none';
-    const content = document.getElementById('results-content');
-    content.style.display = 'block';
-    content.classList.add('roster-only');
+    showSetupOnly();
     const anyAble = roster.some(a => a.count > 0 && Object.keys(a.abilities).length);
     // An empty roster's editor already says to add some.
-    document.getElementById('aniimo-collapsed-summary').textContent = anyAble
-        ? 'Nothing these Aniimo can do earns anything yet. Add Aniimo or abilities.'
-        : '';
+    document.getElementById('aniimo-collapsed-summary').textContent = anyAble ? 'No plan found with these Aniimo.' : '';
+}
+
+// Of the results, only the Aniimo card, emptied of the last plan's team: its setup may be what
+// to change.
+function showSetupOnly() {
+    const content = document.getElementById('results-content');
+    content.style.display = 'block';
+    content.classList.add('setup-only');
+    document.getElementById('aniimo-collapsed-summary').textContent = '';
     document.getElementById('aniimo-summary').innerHTML = '';
     document.getElementById('aniimo-abilities').innerHTML = '';
     document.getElementById('aniimo-count').hidden = true;
@@ -1530,7 +1590,7 @@ function renderRosterSummary(plan) {
 // --- Season ----------------------------------------------------------------------------
 // The Harvest Moon Festival (see `SEASON`): on the page from RV 10, or always in Advanced mode,
 // where there's no RV level to go by. While it's on, plans may use the season's recipes, bar Recipe
-// Notes the player hasn't unlocked, and say how much Moonray Wheat their seeds cost a day.
+// Notes the player hasn't unlocked, and say how much Moonray Wheat their seeds use.
 
 function seasonAvailable() {
     return !isSimpleMode() || selectedHomeLevel() >= SEASON.minHomeLevel;
@@ -1585,7 +1645,7 @@ function recipeLabel(recipe) {
 async function loadRecipeIndex() {
     try {
         recipeIndex = JSON.parse(await callWorker('get_all_items'))
-            .map(r => ({ name: r.name, facility: r.facility, cost: r.cost || 0, environment: r.environment || null, jobs: r.jobs || [] }))
+            .map(r => ({ name: r.name, facility: r.facility, cost: r.cost || 0, seasonSeedCost: r.season_seed_cost || 0, environment: r.environment || null, jobs: r.jobs || [] }))
             .sort((a, b) => a.facility.localeCompare(b.facility) || a.name.localeCompare(b.name));
         document.getElementById('skip-options').innerHTML =
             recipeIndex.map(r => `<option value="${recipeLabel(r)}"></option>`).join('');
@@ -1611,7 +1671,7 @@ function renderSkippedRecipes() {
         .sort((a, b) => prettyItem(a).localeCompare(prettyItem(b)))
         .map(name => {
             const facility = facilityOf(name);
-            return `<span class="skip-chip">${prettyItem(name)}${facility ? ` <span class="skip-chip-facility">${facility}</span>` : ''}<button type="button" data-unskip="${name}" aria-label="Stop skipping ${prettyItem(name)}" title="Stop skipping">✕</button></span>`;
+            return `<span class="skip-chip">${escapeText(prettyItem(name))}${facility ? ` <span class="skip-chip-facility">${facility}</span>` : ''}<button type="button" data-unskip="${escapeText(name)}" aria-label="Stop skipping ${escapeText(prettyItem(name))}" title="Stop skipping">✕</button></span>`;
         }).join('');
 }
 
@@ -1695,10 +1755,10 @@ let aniimoLevels = {};
 // What to send the solver for `setup`: the per-ability levels, or the player's roster (see
 // `aniimo_setup_from` and `JsRoster` in wasm.rs).
 function aniimoInput(setup) {
-    if (setup.startsWith('roster')) return { aniimo: 'roster', roster: rosterPayload(), aniimo_levels: {}, workers: {} };
+    if (setup.startsWith('roster')) return { aniimo: 'roster', roster: rosterPayload(), aniimo_levels: {} };
     const levels = {};
     levelledAbilities().forEach(ability => { levels[ability] = bestAniimoLevel(ability); });
-    return { aniimo: setup.split(':')[0], aniimo_levels: levels, workers: {} };
+    return { aniimo: setup.split(':')[0], aniimo_levels: levels };
 }
 
 function bestAniimoLevel(ability) {
@@ -2106,10 +2166,11 @@ function renderSeedTable(plan) {
         .filter(s => (s.facility === 'Farmland' || s.facility === 'Woodland') && s.status === 'producing' && s.cycle_time > 0)
         .map(s => {
             const perSecond = s.facility_count / s.cycle_time;
-            const cost = recipeIndex.find(r => r.name === s.item_name)?.cost || 0;
+            const recipe = recipeIndex.find(r => r.name === s.item_name);
+            const cost = recipe?.cost || 0;
             // Whole seeds when counting to the level-up.
             const seeds = levelUp ? Math.ceil(perSecond * multiplier) : perSecond * multiplier;
-            const wheat = SEASON.crops.includes(s.item_name) ? seeds * SEASON.seedCost : 0;
+            const wheat = seeds * (recipe?.seasonSeedCost || 0);
             return { name: s.item_name, facility: s.facility, plots: s.facility_count, seeds, cost: seeds * cost, wheat };
         })
         .sort((a, b) => b.seeds - a.seeds);
@@ -3289,12 +3350,13 @@ function displayPlan(plan) {
             return;
         }
         showError(plan.error || 'An unknown error occurred.');
+        showSetupOnly();
         return;
     }
 
     errorEl.style.display = 'none';
     resultsContent.style.display = 'block';
-    resultsContent.classList.remove('roster-only');
+    resultsContent.classList.remove('setup-only');
     // A level-up plan's own card says how long it takes; the goal is for coin plans.
     goalSection.style.display = plan.level_up ? 'none' : 'block';
 
@@ -3388,6 +3450,8 @@ async function runFindPlan() {
     plansBySetup = {};
     rankingsBySetup = {};
     stopRanking();
+    stopSetupSolve();
+    stopLayout();
     if (pendingWorkerRequests.size > 0) restartWorker();
     try {
         const input = getPlanInputValues();
@@ -3401,6 +3465,7 @@ async function runFindPlan() {
             hasPolisher: (input.facilities['Dance Pad Polisher'] || []).some(t => t.count > 0),
             // Only what the player skipped; locked special recipes are the default, not news.
             skipped: [...skippedRecipes].sort((a, b) => prettyItem(a).localeCompare(prettyItem(b))),
+            simple: isSimpleMode(),
         };
         startProgress(input, runId);
 
@@ -3410,7 +3475,7 @@ async function runFindPlan() {
         // a fill percentage by `trialCountToPercent` below.
         // Only the backup planner reports progress (see worker.js); the exact planner is quick.
         // Whichever Best the player has asked for; the other one waits until they switch to it.
-        const bestSetup = selectedAniimoSetup() === 'minimum' ? 'best' : selectedAniimoSetup();
+        const bestSetup = selectedAniimoSetup() === 'minimum' ? bestAniimoSetup() : selectedAniimoSetup();
         Object.assign(input, aniimoInput(bestSetup));
         const bestJson = await callWorker('find_plan', JSON.stringify({ ...input, aniimo: bestSetup }), (count) => {
             // The exact planner reports each solve; the backup planner counts its trials.
@@ -3442,9 +3507,13 @@ async function runFindPlan() {
                 if (runId !== planRunId) return;
                 setStep('minimum', 'fail');
                 console.error('Minimum Aniimo plan failed:', error);
+                plansBySetup.minimum = { success: false, error: `The Minimum team plan failed: ${error.message}` };
+                if (selectedAniimoSetup() === 'minimum') showSelectedPlan();
             });
     } catch (error) {
-        if (runId === planRunId && progress) {
+        // A run a newer one cancelled leaves the screen to it.
+        if (runId !== planRunId) return;
+        if (progress) {
             progress.steps.forEach(s => { if (s.state === 'running') s.state = 'fail'; else if (s.state === 'pending') s.state = 'skipped'; });
             renderProgress();
         }
@@ -3452,6 +3521,7 @@ async function runFindPlan() {
         lastPlan = null;
         showError(`Plan calculation failed: ${error.message}`);
     } finally {
+        if (runId !== planRunId) return;
         btn.disabled = false;
         btnText.style.display = 'inline';
         btnLoading.style.display = 'none';
@@ -3656,7 +3726,7 @@ function renderRecipeTables(recipes) {
             const cell = (label, value) => `<td data-label="${label}"${value === '-' ? ' class="empty"' : ''}>${value}</td>`;
             const rows = byFacility.get(f.name).map(r => `
                 <tr${r.verified === false ? ' class="unverified"' : ''}>
-                    <td class="recipe-name">${prettyItem(r.name)}${SPECIAL_NAMES.has(r.name) ? ' <span class="tag special" title="Takes a rare currency to unlock">special</span>' : ''}${r.verified === false ? ' <span class="info-icon" data-tooltip="Not yet checked in game.">?</span>' : ''}</td>
+                    <td class="recipe-name">${prettyItem(r.name)}${SPECIAL_NAMES.has(r.name) ? ' <span class="tag special" title="Takes a rare currency to unlock">special</span>' : ''}${r.season ? ` <span class="tag special" title="${SEASON.name} only">season</span>` : ''}${r.verified === false ? ' <span class="info-icon" data-tooltip="Not yet checked in game.">?</span>' : ''}</td>
                     ${cell('Level', r.facility_level)}
                     ${cell('Inputs', formatRecipeInputs(r))}
                     ${cell('Yield', formatRecipeYield(r))}
@@ -3767,8 +3837,7 @@ document.addEventListener('DOMContentLoaded', () => {
         toggle.setAttribute('aria-expanded', String(expanded));
         document.getElementById('aniimo-body').hidden = !expanded;
     });
-    // A level button is named for what it sets: `level-<ability>` on Best, `worker-<facility>`
-    // on Custom.
+    // Best's level buttons are named `level-<ability>`; the roster editor handles its own.
     document.getElementById('aniimo-setup-panel').addEventListener('change', event => {
         const { name, value, checked } = event.target;
         const unheardOf = event.target.dataset?.confirm;
@@ -3813,9 +3882,10 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // --- Hover tips --------------------------------------------------------------------------
-// One card for every hover tip on the page, shown at once instead of after the browser's delay.
-// Diagram pieces carry `data-tip` (see `tipAttrs`); anything else with a `title` shows it in the
-// same card, the title moved aside so the browser's own tip doesn't show as well.
+// One card for hover tips, shown at once instead of after the browser's delay. Diagram pieces
+// carry `data-tip` (see `tipAttrs`); anything else with a `title` shows it in the same card, the
+// title moved aside so the browser's own tip doesn't show as well. (The info icons' `data-tooltip`
+// is a CSS tip of its own; see style.css.)
 const tipCard = document.createElement('div');
 tipCard.className = 'tip-card';
 tipCard.setAttribute('role', 'tooltip');
@@ -3875,7 +3945,7 @@ function placeTip(x, y, below = y) {
     const margin = 12;
     const { width, height } = tipCard.getBoundingClientRect();
     const left = Math.min(Math.max(margin, x - width / 2), window.innerWidth - width - margin);
-    const top = y - height - 14 >= margin ? y - height - 14 : below + 18;
+    const top = y - height - 14 >= margin ? y - height - 14 : Math.min(below + 18, window.innerHeight - height - margin);
     tipCard.style.left = `${left}px`;
     tipCard.style.top = `${top}px`;
 }

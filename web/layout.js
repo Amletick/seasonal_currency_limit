@@ -156,7 +156,7 @@ export function layOut(pieces, options = {}) {
         // mostly fails, and failing is the slow part.
         if (pack && plots) {
             const packed = packPlots(shape.plots, own, allowed, r => free(r, i), buildings);
-            if (packed && (!plots || costOf(packed) < costOf(plots) - EPSILON)) plots = packed;
+            if (packed && costOf(packed) < costOf(plots) - EPSILON) plots = packed;
         }
         if (!plots) return null;
         return { cost: costOf(plots), x, y, shape, rects: [...buildings, ...plots], squares: own, sensitive: plots };
@@ -178,13 +178,13 @@ export function layOut(pieces, options = {}) {
             return known.get(key);
         };
         for (const shape of shapes[i]) {
-            let tried = 0;
+            let fits = 0;
             for (const [ox, oy] of clusterOffsets) {
-                if (tried >= CLUSTER_TRIES) break;
-                const pack = tried < CLUSTER_PACKS && shape.plots.length <= CLUSTER_PACK_MOST;
+                if (fits >= CLUSTER_TRIES) break;
+                const pack = fits < CLUSTER_PACKS && shape.plots.length <= CLUSTER_PACK_MOST;
                 const spot = tryCluster(i, shape, Math.round(ox - shape.cx), Math.round(oy - shape.cy), pack, clear);
                 if (!spot) continue;
-                tried++;
+                fits++;
                 if (!best || spot.cost < best.cost - EPSILON) best = spot;
             }
         }
@@ -194,9 +194,15 @@ export function layOut(pieces, options = {}) {
     const place = i => (pieces[i].cluster ? placeCluster(i) : placeRigid(i));
     const placed = new Map();
     const unplaced = [];
+    // Nothing moves out while pieces are first put down, so once a piece of some shape finds no
+    // room, no later one of that shape will: they're skipped rather than searched for again.
+    const noRoom = new Set();
+    const shapeOf = i => (pieces[i].cluster ? null : JSON.stringify(pieces[i].members.map(m => [m.x, m.y, m.w, m.h, !!m.sensitive])));
     for (const i of order) {
-        const spot = place(i);
+        const shape = shapeOf(i);
+        const spot = shape !== null && noRoom.has(shape) ? null : place(i);
         if (!spot) {
+            if (shape !== null) noRoom.add(shape);
             unplaced.push(i);
             continue;
         }

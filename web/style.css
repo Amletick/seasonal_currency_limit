@@ -2293,25 +2293,7 @@ tr:hover .skip-row,
     padding-top: 0.25rem;
 }
 
-/* The Best/Minimum tabs and the level-4 tick beside them. */
-.aniimo-setup-controls {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    flex-wrap: wrap;
-}
-
-.aniimo-setup-controls .aniimo-cap {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-    font-size: 0.82rem;
-    color: var(--text-muted, #9aa0a8);
-    white-space: nowrap;
-    cursor: pointer;
-}
-
-/* Saying which Aniimo you have: ability levels under Best, facility by facility under Custom. */
+/* Saying which Aniimo you have: ability levels under Best, the roster under My Aniimo. */
 .aniimo-setup-panel {
     padding: 0.1rem 0 0.9rem;
 }
@@ -2320,8 +2302,7 @@ tr:hover .skip-row,
     margin: 0 0 0.6rem;
 }
 
-.ability-levels,
-.facility-workers {
+.ability-levels {
     display: grid;
     gap: 0.35rem;
 }
@@ -2330,20 +2311,13 @@ tr:hover .skip-row,
     grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
 }
 
-.ability-level,
-.facility-worker {
+.ability-level {
     display: flex;
     align-items: center;
     gap: 0.5rem;
 }
 
-.facility-worker-name {
-    min-width: 11.5rem;
-    font-size: 0.86rem;
-}
-
-.ability-level .ability,
-.facility-worker .ability {
+.ability-level .ability {
     min-width: 5.5rem;
     text-align: center;
 }
@@ -2360,26 +2334,6 @@ tr:hover .skip-row,
     border-radius: 6px;
     font-size: 0.8rem;
     font-variant-numeric: tabular-nums;
-}
-
-/* A personality the plan may count on, ticked or not. */
-.chip-toggle {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.3rem;
-    padding: 0.1rem 0.5rem;
-    border: 1px solid var(--border);
-    border-radius: 999px;
-    font-size: 0.78rem;
-    color: var(--text-muted);
-    cursor: pointer;
-    user-select: none;
-}
-
-.chip-toggle:has(input:checked) {
-    border-color: color-mix(in srgb, var(--accent, #6aa9ff) 60%, transparent);
-    background: color-mix(in srgb, var(--accent, #6aa9ff) 12%, transparent);
-    color: var(--text);
 }
 
 /* A `hidden` element stays hidden whatever else its class says about display. */
@@ -2783,9 +2737,17 @@ tr:hover .skip-row,
     gap: 0.5rem;
 }
 
-/* A roster that can't make a plan shows only its own card. */
-#results-content.roster-only > :not(#aniimo-card) {
+/* A plan that failed shows only the Aniimo card, whose setup may be what to change. */
+#results-content.setup-only > :not(#aniimo-card) {
     display: none !important;
+}
+
+/* While another Aniimo setup is worked out, the last one's results are dimmed. */
+#results-content.stale > :not(#aniimo-card),
+#results-content.stale #aniimo-body,
+#results-content.stale #aniimo-abilities {
+    opacity: 0.45;
+    pointer-events: none;
 }
 
 /* Hover tips (see "Hover tips" in app.js). */

@@ -456,3 +456,38 @@ fn crew_without_water_grows_unwatered() {
     assert!((dry.rate_per_second - 6.0 * 15.0 / 640.0).abs() < 1e-9, "unwatered {}", dry.rate_per_second);
     assert!((wet.rate_per_second - 6.0 * 15.0 / 480.0).abs() < 1e-9, "watered {}", wet.rate_per_second);
 }
+
+// Each roster member able to work a recipe gets a copy of it, timed for that member; the recipe
+// itself stays for its price, can't be made as it is, and takes the fastest member's time.
+#[test]
+fn crew_copies_are_timed_per_member() {
+    let crew = crew_of(&[(1, &[("Earth", 1)]), (1, &[("Earth", 4)])]);
+    let Some(items) = crew_items(&crew) else { return };
+    let rocks: Vec<&ProductionItem> = items.iter().filter(|i| aniimax::models::base_item_name(&i.name) == "rock").collect();
+    let copy = |member: usize| rocks.iter().find(|i| i.crew == Some(member)).expect("a copy per member");
+    assert_eq!(copy(0).name, "rock__by0");
+    assert!(copy(1).production_time < copy(0).production_time, "the level-4 Aniimo is faster");
+    let original = rocks.iter().find(|i| i.crew.is_none()).expect("the recipe itself stays");
+    assert_eq!(original.facility_level, u32::MAX);
+    assert!((original.production_time - copy(1).production_time).abs() < 1e-9);
+}
+
+// A resident facility keeps its Aniimo all day: two Sandcastles need two Leisure Aniimo.
+#[test]
+fn crew_residents_take_a_whole_aniimo() {
+    if load_items().is_none() {
+        return;
+    }
+    let counts = FacilityCounts::only(&[("Tidewhisper Sandcastle", 2, 1)]);
+    let sandcastles = |plan: &ExactPlan, items: &[ProductionItem]| -> u32 {
+        plan.units
+            .iter()
+            .filter(|(name, _)| items.iter().any(|i| &i.name == *name && i.facility == "Tidewhisper Sandcastle"))
+            .map(|(_, &n)| n)
+            .sum()
+    };
+    let (one, items) = solve_with_crew(&counts, crew_of(&[(1, &[("Leisure", 2)])]));
+    assert_eq!(sandcastles(&one, &items), 1);
+    let (two, items) = solve_with_crew(&counts, crew_of(&[(2, &[("Leisure", 2)])]));
+    assert_eq!(sandcastles(&two, &items), 2);
+}

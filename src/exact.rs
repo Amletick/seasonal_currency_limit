@@ -645,10 +645,11 @@ fn build_model<'a>(
             }
         }
         for (building, used) in set_up {
-            let ability = crew.environment.get(&building);
+            // A building with no ability listed needs no Aniimo (as `check_plan` takes it).
+            let Some(ability) = crew.environment.get(&building) else { continue };
             let mut staffed: Vec<(usize, f64)> = used.into_iter().map(|(v, n)| (v, -n)).collect();
             for (member, aniimo) in crew.members.iter().enumerate() {
-                if aniimo.count == 0 || ability.is_none_or(|a| aniimo.level(a) == 0) {
+                if aniimo.count == 0 || aniimo.level(ability) == 0 {
                     continue;
                 }
                 let staff = model.add(0.0, (0.0, aniimo.count as f64), false, VarKind::Staff { building: building.clone(), member });
@@ -1169,8 +1170,6 @@ pub fn check_plan(
     Ok(earned)
 }
 
-/// The model in CPLEX LP format, for solving with an external solver, and how many variables it
-/// has (`x0` up to `x<count - 1>`; a solver may leave out any that no constraint mentions).
 /// A model written out for an external solver.
 #[derive(Debug, Clone, Default)]
 pub struct LpProblem {
@@ -1183,6 +1182,8 @@ pub struct LpProblem {
     pub tiebreak: Vec<(usize, f64)>,
 }
 
+/// The model in CPLEX LP format, for solving with an external solver (a solver may leave out any
+/// variable that no constraint mentions).
 pub fn write_lp(
     items: &[ProductionItem],
     currency: &str,

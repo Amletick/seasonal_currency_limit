@@ -194,17 +194,14 @@ export const SPECIAL_RECIPES = [
 ];
 
 // The Harvest Moon Festival, from RV 10: season crops' seeds cost Moonray Wheat, which season
-// orders pay out, and every season item sold counts points on top of its coins. Plans take how much
-// wheat the player gets a day rather than tracking the orders. The recipes are in
+// orders pay out, and every season item sold counts points on top of its coins. Wheat is taken as
+// unlimited; plans show how much their seeds use. The recipes and seed costs are in
 // data/harvest_moon_festival.csv.
 export const SEASON = {
     name: 'Harvest Moon Festival',
     currency: 'Moonray Wheat',
     points: 'Harvest Moon Points',
     minHomeLevel: 10,
-    seedCost: 4,
-    // Crops whose seeds cost Moonray Wheat rather than coins.
-    crops: ['moondew_radish', 'waxing_moon_pepper'],
     // Recipes unlocked with Recipe Notes; plans only use the ones the player ticks. The season's
     // other recipes come unlocked.
     recipeNotes: [
@@ -248,8 +245,7 @@ export const LEVEL_UP_CHAINS = [
 
 // How much ground each facility takes, in tiles, measured in game. Not all are square, and
 // several sit on half tiles: the Blazing Stove snaps to a gridline of its own. The Storage Unit
-// is here too, since a layout has to place it even though it produces nothing. Unknown means it
-// hasn't been measured yet.
+// is here too, since a layout has to place it even though it produces nothing.
 export const FACILITY_FOOTPRINTS = {
     'Farmland': [2, 2],
     'Woodland': [4, 4],

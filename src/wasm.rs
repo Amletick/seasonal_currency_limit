@@ -173,6 +173,14 @@ fn format_time(seconds: f64) -> String {
 
 /// Get embedded production data.
 /// This embeds the CSV data directly into the WASM binary.
+/// The Harvest Moon Festival's recipes, watered like everything else.
+fn embedded_season_items() -> Vec<ProductionItem> {
+    let mut season = crate::data::parse_season(include_str!("../data/harvest_moon_festival.csv"))
+        .expect("embedded harvest_moon_festival.csv is valid");
+    crate::models::apply_watering(&mut season);
+    season
+}
+
 fn get_embedded_items() -> Vec<ProductionItem> {
     use csv::ReaderBuilder;
 
@@ -1212,7 +1220,7 @@ pub struct JsProductionPlan {
 /// What a plan makes of one priority.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsPriority {
-    /// "coins", "aniimo_exp", "aniipods", "Wood Blocks" or "Mineral Sand".
+    /// "coins", "aniimo_exp", "aniipods", "Wood Blocks", "Mineral Sand" or "season_points".
     pub target: String,
     pub per_second: f64,
     /// For a currency other than coins, the items that make it and how many of each per second,
@@ -1332,7 +1340,7 @@ pub fn find_plan(input_json: &str, on_progress: Option<js_sys::Function>) -> Str
 }
 
 /// With "prioritize byproducts" on, the exact planner first finds the most of each byproduct the
-/// facilities can make: one model per byproduct, `[{"resource", "lp", "variables"}]` (see
+/// facilities can make: one model per byproduct, `[{"resource", "lp", "variables", "tiebreak"}]` (see
 /// [`exact_problem`] for the format). The caller solves each and passes
 /// `[[resource, most per second], ...]` to [`exact_problem`] and [`exact_plan`] as the floors.
 /// Empty when byproducts aren't prioritized.
@@ -1360,7 +1368,7 @@ pub fn exact_byproduct_problems(input_json: &str) -> String {
 
 /// The model for the most of one priority `target` (see [`JsPlanInput::priorities`]) this
 /// homeland can make while keeping every floor in `stage_json` (the priorities before it):
-/// `{"lp", "variables"}` as in [`exact_problem`]. The caller solves it and adds
+/// `{"lp", "variables", "tiebreak"}` as in [`exact_problem`]. The caller solves it and adds
 /// `[target, per second]` to the floors for the next priority and the final coin solve.
 #[wasm_bindgen]
 pub fn exact_priority_problem(input_json: &str, stage_json: &str, target: &str) -> String {
@@ -1379,7 +1387,7 @@ pub fn exact_priority_problem(input_json: &str, stage_json: &str, target: &str) 
 }
 
 /// For the level-up strategy, the model for the soonest level-up (see
-/// [`crate::exact::Goal::LevelUp`]): `{"lp", "variables"}` as in [`exact_problem`]. The caller
+/// [`crate::exact::Goal::LevelUp`]): `{"lp", "variables", "tiebreak"}` as in [`exact_problem`]. The caller
 /// solves it and passes the pace it finds (its objective) to [`exact_problem`] and [`exact_plan`].
 /// `lp` is empty for the coins strategy, or when the stock already covers the level-up.
 #[wasm_bindgen]
@@ -1611,10 +1619,7 @@ impl PreparedInput {
         };
         let mut items = get_embedded_items();
         if input.season {
-            let mut season = crate::data::parse_season(include_str!("../data/harvest_moon_festival.csv"))
-                .expect("embedded harvest_moon_festival.csv is valid");
-            crate::models::apply_watering(&mut season);
-            items.extend(season);
+            items.extend(embedded_season_items());
         }
         items.retain(|item| !input.exclude.iter().any(|name| name == crate::models::base_item_name(&item.name)));
         let setup = input
@@ -1692,20 +1697,23 @@ impl PreparedInput {
                 JsPlanStep { aniimo, aniimo_tasks, ..step.into() }
             })
             .collect();
+        let income_streams: Vec<JsPlanProduct> = plan
+            .income_streams
+            .into_iter()
+            .map(|stream| {
+                let points = self.items.iter().find(|i| i.name == stream.item_name).and_then(|i| i.season).map_or(0.0, |s| s.points);
+                JsPlanProduct { points, ..stream.into() }
+            })
+            .collect();
+        // The exact planner sets its own (see `exact_plan`); this is for the backup planner's.
+        let season_points = self.input.season.then(|| income_streams.iter().map(|s| s.units_per_second * s.points).sum());
         JsProductionPlan {
             success: true,
             error: None,
             currency: plan.currency,
             rate_per_second: plan.rate_per_second,
             coin_items,
-            income_streams: plan
-                .income_streams
-                .into_iter()
-                .map(|stream| {
-                    let points = self.items.iter().find(|i| i.name == stream.item_name).and_then(|i| i.season).map_or(0.0, |s| s.points);
-                    JsPlanProduct { points, ..stream.into() }
-                })
-                .collect(),
+            income_streams,
             byproduct_rates: plan.byproduct_rates,
             environment_assignments: plan.environment_assignments.into_iter().map(Into::into).collect(),
             candidates_evaluated: plan.candidates_evaluated,
@@ -1715,7 +1723,7 @@ impl PreparedInput {
             unverified,
             level_up: None,
             priorities: vec![],
-            season_points: None,
+            season_points,
             staffing: Vec::new(),
         }
     }
@@ -1912,13 +1920,18 @@ struct RecipeInfo {
     jobs: Vec<(String, String, u32)>,
     /// The growing environment a crop or tree needs, if any.
     environment: Option<String>,
+    /// Whether it's a season recipe (see [`crate::models::SeasonTerms`]).
+    season: bool,
+    /// For a season crop, the season currency its seeds cost a batch.
+    season_seed_cost: Option<f64>,
 }
 
 /// Get the full recipe list for every item in the game data, grouped by nothing in particular
 /// (the caller groups by facility); used by the facilities reference page.
 #[wasm_bindgen]
 pub fn get_all_items() -> String {
-    let items = get_embedded_items();
+    let mut items = get_embedded_items();
+    items.extend(embedded_season_items());
     let requirements = embedded_aniimo_requirements();
     let unverified = embedded_unverified();
     let grower_steps = embedded_grower_steps();
@@ -1943,6 +1956,8 @@ pub fn get_all_items() -> String {
             verified: !unverified.iter().any(|(name, facility)| *name == item.name && *facility == item.facility),
             jobs: grower_steps.get(&item.name).iter().map(|s| (s.step.clone(), s.ability.clone(), s.min_level)).collect(),
             environment: item.environment.clone(),
+            season: item.season.is_some(),
+            season_seed_cost: item.season.map(|s| s.seed_cost).filter(|&cost| cost > 0.0),
         })
         .collect();
 

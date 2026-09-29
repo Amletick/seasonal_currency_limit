@@ -4223,7 +4223,7 @@ pub fn find_production_plan_with_progress(
             let owned = facility_counts.get_count(name);
             let mut remaining = owned;
             let mut steps: Vec<PlanStep> = Vec::new();
-            for (item_name, units_needed, rate) in hosted {
+            for (item_name, units_needed, _) in hosted {
                 let count = (whole_units(units_needed)).min(remaining);
                 remaining -= count;
                 steps.push(PlanStep {
@@ -4233,8 +4233,7 @@ pub fn find_production_plan_with_progress(
                     status: PlanStepStatus::Producing,
                     reason: uses_of(name, item_name).unwrap_or_else(|| "Sells directly".to_string()),
                     is_grower: false,
-                    // Units busy over batches a second is each batch's time.
-                    cycle_time: (rate > 0.0).then(|| units_needed / rate),
+                    cycle_time: item_map.get(item_name).map(|item| item.production_time),
                     environment: None,
                     busy_units: Some(units_needed.min(count as f64)),
                     crew: None,

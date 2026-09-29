@@ -16,8 +16,8 @@ const ready = import('./pkg/aniimax.js' + load).then(async (pkg) => {
     return pkg;
 });
 
-// Handlers taking a single string argument and returning one; `find_plan` is handled separately
-// below since it also takes a progress callback.
+// Handlers taking a single string argument and returning one; `find_plan` and
+// `rank_improvements` are handled separately below since they report progress.
 const HANDLER_NAMES = ['time_to_reach', 'get_version', 'get_all_items'];
 
 // HiGHS (https://highs.dev), compiled to WebAssembly. A fresh instance per solve, from bytes
@@ -59,9 +59,19 @@ async function solveModel(problem, options = SOLVE_OPTIONS) {
     }
     const proven = result.Status === 'Optimal';
     if (!proven && result.Status !== 'Time limit reached') return null;
-    const values = Array.from({ length: problem.variables }, (_, i) => result.Columns['x' + i]?.Primal ?? 0);
-    const tiebreak = (problem.tiebreak || []).reduce((sum, [v, weight]) => sum + weight * (values[v] || 0), 0);
-    return { values, proven, objective: result.ObjectiveValue + tiebreak };
+    // Out of time before finding any plan at all.
+    if (!Number.isFinite(result.ObjectiveValue) || !result.Columns) return null;
+    const values = columnValues(problem, result);
+    return { values, proven, objective: result.ObjectiveValue + tiebreakOf(problem, values) };
+}
+
+function columnValues(problem, result) {
+    return Array.from({ length: problem.variables }, (_, i) => result.Columns?.['x' + i]?.Primal ?? 0);
+}
+
+// What the model's tie-break (see `BUILDING_TIE_BREAK` in exact.rs) took off an objective.
+function tiebreakOf(problem, values) {
+    return (problem.tiebreak || []).reduce((sum, [v, weight]) => sum + weight * (values[v] || 0), 0);
 }
 
 // The exact planner (see `exact_problem` in wasm.rs): builds the model in wasm, solves it with
@@ -93,7 +103,9 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
     for (const target of JSON.parse(payload).priorities || []) {
         step(`priority:${target}`, 'start');
         const alone = stage.floors.length === 0;
-        const most = await solveModel(JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), target)));
+        const priority = JSON.parse(exact_priority_problem(payload, JSON.stringify(stage), target));
+        if (!priority.lp) throw new Error('this setup isn\'t covered by the exact planner');
+        const most = await solveModel(priority);
         step(`priority:${target}`, 'done', most?.proven);
         if (!most) throw new Error(`no plan found for the most ${target}`);
         if (alone) first({ measure: target, objective: most.objective, proven: most.proven });
@@ -129,7 +141,9 @@ async function exactPlanJson(pkg, payload, step = () => {}, first = () => {}) {
     if (!proven) {
         // The same model without whole units: the most any plan could earn.
         const relaxed = (await newHighs()).solve(problem.lp.replace(/\nGeneral\n[\s\S]*\nEnd/, '\nEnd'), {});
-        bound = relaxed.ObjectiveValue;
+        if (Number.isFinite(relaxed.ObjectiveValue)) {
+            bound = Math.max(bound, relaxed.ObjectiveValue + tiebreakOf(problem, columnValues(problem, relaxed)));
+        }
     }
     step('final', 'done', solved.proven);
     if (stage.pace) {
@@ -239,7 +253,7 @@ self.onmessage = async (event) => {
         if (type === 'find_plan') {
             let result = null;
             let fallbackReason = null;
-            // Each solve's start and end go to the page as progress, as `{ step, state }`.
+            // Each solve's start and end go to the page as progress, as `{ step, state, proven }`.
             const step = (key, state, proven) => self.postMessage({ id, type: 'progress', count: { step: key, state, proven } });
             try {
                 let top = null;
@@ -250,9 +264,15 @@ self.onmessage = async (event) => {
                     result = JSON.stringify(plan);
                 }
             } catch (error) {
-                step('backup', 'start');
                 fallbackReason = error && error.message ? error.message : String(error);
-                console.warn('Exact planner failed; using the backup planner instead:', error);
+                // The backup planner doesn't know the player's roster, so a roster plan stops here.
+                if (JSON.parse(payload).aniimo?.startsWith('roster')) {
+                    console.warn('Exact planner failed on a roster:', error);
+                    result = JSON.stringify({ success: false, error: `No plan found with these Aniimo: ${fallbackReason}.` });
+                } else {
+                    step('backup', 'start');
+                    console.warn('Exact planner failed; using the backup planner instead:', error);
+                }
             }
             if (!result) {
                 // Forwarded straight from the wasm solver's own real trial-solve count (see
