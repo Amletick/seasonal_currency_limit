@@ -2545,6 +2545,17 @@ tr:hover .skip-row,
     margin-top: 0.6rem;
 }
 
+.layout-toggles {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1rem;
+}
+
+.layout-diagram.no-sim .layout-flows,
+.layout-diagram.no-sim .layout-rings {
+    display: none;
+}
+
 .layout-sim {
     display: inline-flex;
     align-items: center;

@@ -268,7 +268,10 @@
                             <p>Every finished batch is carried to the Storage Unit (SU), so each facility is placed by its trips per hour times its straight-line distance to it: the busiest sit closest, idle ones go to the edge. Each environment building's plots can go anywhere its coverage still reaches them, so they sit on its Storage Unit side. No covered plot reaches another building's coverage, and a crop that needs an environment but is grown without one stays out of all of it, so every crop keeps the temperature the plan gave it. Crops that need no environment can go anywhere. Everything stays within the plots your RV level has open (each 20 by 15 tiles; in Advanced mode, the lowest RV level that allows what you entered), and the Storage Unit goes wherever the walking comes out least. Hover or tap a facility for its trips and distance. The diagram plays the homeland out in sped-up game time from when everything is set up: each finished batch is carried to the Storage Unit, and a recipe starts only once what it takes is there. A ring on each facility shows its batch, amber while it waits for materials. This is a close-packed arrangement worked out step by step, not a proven shortest one.</p>
                         </details>
                         <div class="layout-controls">
-                            <label class="layout-whole"><input type="checkbox" id="layout-whole"> Show the whole homeland</label>
+                            <span class="layout-toggles">
+                                <label class="layout-whole"><input type="checkbox" id="layout-whole"> Show the whole homeland</label>
+                                <label class="layout-whole"><input type="checkbox" id="layout-sim-on" checked> Simulate</label>
+                            </span>
                             <span class="layout-sim" id="layout-sim" hidden><span id="layout-clock">0h 00m</span><button type="button" class="toggle-button small" id="layout-replay">Replay</button></span>
                         </div>
                         <div class="layout-diagram" id="layout-diagram"></div>

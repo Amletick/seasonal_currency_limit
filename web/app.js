@@ -360,7 +360,7 @@ function getPersistedFieldIds() {
         'mode-simple', 'mode-advanced', 'home-level',
         'ecological-module-level', 'kitchen-module-level',
         'resource-detector-level', 'crafting-module-level',
-        'rate-unit', 'season-on'
+        'rate-unit', 'season-on', 'layout-sim-on'
     ];
 }
 
@@ -1117,6 +1117,9 @@ function attachLayoutHandlers() {
         layoutShowsWhole = e.target.checked;
         if (lastLayout) drawLayout(lastLayout);
     });
+    document.getElementById('layout-sim-on').addEventListener('change', () => {
+        if (lastLayout) drawLayout(lastLayout);
+    });
     document.getElementById('layout-replay').addEventListener('click', () => {
         if (layoutSim) resetLayoutSim(layoutSim);
     });
@@ -1125,8 +1128,11 @@ function attachLayoutHandlers() {
 function drawLayout(drawn) {
     const diagram = document.getElementById('layout-diagram');
     diagram.innerHTML = homelandSvg(drawn.layout, drawn.homeLevel);
+    // With the simulation off, the layout is drawn on its own.
+    const on = document.getElementById('layout-sim-on').checked;
+    diagram.classList.toggle('no-sim', !on);
     const stock = new Map(planContext?.levelUp ? lastPlanInput?.level_up?.stock || [] : []);
-    startLayoutSim(diagram.querySelector('.layout-svg'), layoutFlows(drawn.layout), stock);
+    startLayoutSim(on ? diagram.querySelector('.layout-svg') : null, layoutFlows(drawn.layout), stock);
 }
 
 function renderHomelandLayout(plan) {
