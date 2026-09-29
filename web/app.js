@@ -1367,6 +1367,23 @@ function renderRoster() {
         </div>`;
 }
 
+// When the roster can't make a plan: keeps the Aniimo card, and its editor, on screen so the
+// player can add to it, and hides the rest.
+function showRosterShortfall() {
+    document.getElementById('error-message').style.display = 'none';
+    const content = document.getElementById('results-content');
+    content.style.display = 'block';
+    content.classList.add('roster-only');
+    const anyAble = roster.some(a => a.count > 0 && Object.keys(a.abilities).length);
+    // An empty roster's editor already says to add some.
+    document.getElementById('aniimo-collapsed-summary').textContent = anyAble
+        ? 'Nothing these Aniimo can do earns anything yet. Add Aniimo or abilities.'
+        : '';
+    document.getElementById('aniimo-summary').innerHTML = '';
+    document.getElementById('aniimo-abilities').innerHTML = '';
+    document.getElementById('aniimo-count').hidden = true;
+}
+
 // Plans again once the player stops changing the roster for a moment, not on every click.
 let rosterReplan = null;
 function rosterChanged(rerender = true) {
@@ -3242,12 +3259,17 @@ function displayPlan(plan) {
 
     if (!plan.success) {
         goalSection.style.display = 'none';
+        if (selectedSetupTab() === 'custom') {
+            showRosterShortfall();
+            return;
+        }
         showError(plan.error || 'An unknown error occurred.');
         return;
     }
 
     errorEl.style.display = 'none';
     resultsContent.style.display = 'block';
+    resultsContent.classList.remove('roster-only');
     // A level-up plan's own card says how long it takes; the goal is for coin plans.
     goalSection.style.display = plan.level_up ? 'none' : 'block';
 

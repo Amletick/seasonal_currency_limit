@@ -2732,3 +2732,8 @@ tr:hover .skip-row,
     flex-wrap: wrap;
     gap: 0.5rem;
 }
+
+/* A roster that can't make a plan shows only its own card. */
+#results-content.roster-only > :not(#aniimo-card) {
+    display: none !important;
+}
