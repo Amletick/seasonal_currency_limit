@@ -233,6 +233,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
             byproduct: None,
             environment: row.environment,
             season: None,
+            crew: None,
         });
     }
 
@@ -264,6 +265,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
                 .map(|amt| ("Wood Blocks".to_string(), amt)),
             environment: row.environment,
             season: None,
+            crew: None,
         });
     }
 
@@ -292,6 +294,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
                 .map(|amt| ("Mineral Sand".to_string(), amt)),
             environment: row.environment,
             season: None,
+            crew: None,
         });
     }
 
@@ -325,6 +328,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
                 byproduct: None,
                 environment: row.environment,
                 season: None,
+                crew: None,
             });
         }
     }
@@ -362,6 +366,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
             byproduct: None,
             environment: None,
             season: None,
+            crew: None,
         });
     }
 
@@ -398,6 +403,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
             byproduct: None,
             environment: None,
             season: None,
+            crew: None,
         });
     }
 
@@ -434,6 +440,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
             byproduct: None,
             environment: None,
             season: None,
+            crew: None,
         });
     }
 
@@ -482,6 +489,7 @@ fn get_embedded_items() -> Vec<ProductionItem> {
                 byproduct: None,
                 environment: None,
                 season: None,
+                crew: None,
             });
         }
     }
@@ -774,6 +782,10 @@ pub struct JsPlanStep {
     /// empty when the plan wasn't made for a setup or the row produces nothing.
     #[serde(default)]
     pub aniimo_tasks: Vec<JsAniimoTask>,
+    /// When planning with the player's roster, which member works this row (an index into the
+    /// roster sent in [`JsPlanInput::roster`]).
+    #[serde(default)]
+    pub crew: Option<usize>,
 }
 
 /// Aniimo work a plan row creates for one ability: how many Aniimo of that ability and level it
@@ -934,6 +946,7 @@ impl From<crate::models::PlanStep> for JsPlanStep {
             aniimo: None,
             busy_units: s.busy_units,
             aniimo_tasks: Vec::new(),
+            crew: s.crew,
         }
     }
 }
@@ -950,6 +963,7 @@ impl From<JsPlanStep> for crate::models::PlanStep {
             cycle_time: s.cycle_time,
             environment: s.environment,
             busy_units: s.busy_units,
+            crew: s.crew,
         }
     }
 }

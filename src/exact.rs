@@ -132,6 +132,9 @@ pub struct ExactPlan {
     pub pairs: Vec<ExactPair>,
     /// Level-ups per day, for a level-up goal (see [`PACE_UNIT`]).
     pub pace: Option<f64>,
+    /// When planning with the player's roster, `(building, member, share of its day)` for each
+    /// environment building kind a member staffs (see [`crate::models::Crew`]).
+    pub staffing: Vec<(String, usize, f64)>,
 }
 
 /// What a plan optimizes.
@@ -229,6 +232,9 @@ enum VarKind<'a> {
         types: Vec<&'a str>,
         option: PairOption,
     },
+    /// How much of a roster member's day goes to staffing environment buildings of one kind
+    /// (see [`crate::models::Crew`]).
+    Staff { building: String, member: usize },
 }
 
 /// One linear constraint: `(variable, coefficient)` terms, comparison, right-hand side.
@@ -613,6 +619,50 @@ fn build_model<'a>(
         }
         Goal::LevelUp(_) | Goal::EarnWhileLevelingUp(..) | Goal::StockUp(..) => {}
     }
+    // With the player's own Aniimo (see `Crew`), each member's day covers everything it works:
+    // a recipe's time per batch at its rate, or at a facility it lives in, the whole day per unit.
+    // Every environment building in use is staffed all day by a member with its ability.
+    if let Some(crew) = facility_counts.crew() {
+        let mut busy: Vec<Vec<(usize, f64)>> = vec![Vec::new(); crew.members.len()];
+        for (&(recipe, rate), &(_, units)) in rate_of.iter().zip(&units_of) {
+            let Some(member) = recipe.crew.filter(|&m| m < busy.len()) else { continue };
+            if crew.residents.contains(&recipe.facility) {
+                busy[member].push((units, 1.0));
+            } else {
+                busy[member].push((rate, recipe.production_time));
+            }
+        }
+        // The environment buildings of each kind the plan sets up; a pair counts each of its two.
+        let mut set_up: BTreeMap<String, BTreeMap<usize, f64>> = BTreeMap::new();
+        for (v, kind) in model.kinds.iter().enumerate() {
+            let named: Vec<&str> = match kind {
+                VarKind::Environment { building, .. } => vec![building],
+                VarKind::EnvironmentPair { buildings: (a, b), .. } => vec![a, b],
+                _ => continue,
+            };
+            for building in named {
+                *set_up.entry(building.to_string()).or_default().entry(v).or_default() += 1.0;
+            }
+        }
+        for (building, used) in set_up {
+            let ability = crew.environment.get(&building);
+            let mut staffed: Vec<(usize, f64)> = used.into_iter().map(|(v, n)| (v, -n)).collect();
+            for (member, aniimo) in crew.members.iter().enumerate() {
+                if aniimo.count == 0 || ability.is_none_or(|a| aniimo.level(a) == 0) {
+                    continue;
+                }
+                let staff = model.add(0.0, (0.0, aniimo.count as f64), false, VarKind::Staff { building: building.clone(), member });
+                staffed.push((staff, 1.0));
+                busy[member].push((staff, 1.0));
+            }
+            model.constrain(staffed, ComparisonOp::Ge, 0.0);
+        }
+        for (member, terms) in busy.into_iter().enumerate() {
+            if !terms.is_empty() {
+                model.constrain(terms, ComparisonOp::Le, crew.members[member].count as f64);
+            }
+        }
+    }
     // Of plans otherwise equal, the fewest environment buildings: a pair is two.
     for v in 0..model.kinds.len() {
         let buildings = match model.kinds[v] {
@@ -880,9 +930,11 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
     let mut environment = Vec::new();
     let mut pairs: Vec<ExactPair> = Vec::new();
     let mut pace = None;
+    let mut staffing = Vec::new();
     for (kind, &v) in model.kinds.iter().zip(values) {
         match kind {
             VarKind::Pace => pace = Some(v),
+            VarKind::Staff { building, member } if v > 1e-9 => staffing.push((building.clone(), *member, v)),
             VarKind::Rate(recipe) if v > 1e-9 => {
                 recipe_rates.insert(recipe.name.clone(), v);
             }
@@ -946,6 +998,7 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
         environment,
         pairs,
         pace,
+        staffing,
     }
 }
 
@@ -1061,9 +1114,45 @@ pub fn check_plan(
             }
         }
     }
-    for (building, used) in buildings_used {
+    for (&building, &used) in &buildings_used {
         if used > facility_counts.get_count(building) {
             return Err(format!("{used} {building} set up but {} owned", facility_counts.get_count(building)));
+        }
+    }
+    // With the player's own Aniimo: no member works more than its day, and every environment
+    // building set up has a member with its ability on it all day.
+    if let Some(crew) = facility_counts.crew() {
+        let mut busy = vec![0.0; crew.members.len()];
+        for (name, &rate) in &plan.recipe_rates {
+            let recipe = all.get(name.as_str()).ok_or(format!("unknown recipe {name}"))?;
+            let Some(member) = recipe.crew else { continue };
+            let slot = busy.get_mut(member).ok_or(format!("{name} is worked by roster member {member}, who isn't there"))?;
+            *slot += if crew.residents.contains(&recipe.facility) {
+                plan.units.get(name).copied().unwrap_or(0) as f64
+            } else {
+                rate * recipe.production_time
+            };
+        }
+        let mut staffed: HashMap<&str, f64> = HashMap::new();
+        for (building, member, share) in &plan.staffing {
+            let aniimo = crew.members.get(*member).ok_or(format!("{building} staffed by roster member {member}, who isn't there"))?;
+            let ability = crew.environment.get(building).ok_or(format!("{building} needs no Aniimo"))?;
+            if aniimo.level(ability) == 0 {
+                return Err(format!("{building} staffed by roster member {member}, who has no {ability}"));
+            }
+            busy[*member] += share;
+            *staffed.entry(building.as_str()).or_default() += share;
+        }
+        for (&building, &used) in &buildings_used {
+            let have = staffed.get(building).copied().unwrap_or(0.0);
+            if used as f64 > have + TOLERANCE {
+                return Err(format!("{used} {building} set up but only {have} staffed"));
+            }
+        }
+        for (member, (&used, aniimo)) in busy.iter().zip(&crew.members).enumerate() {
+            if used > aniimo.count as f64 + TOLERANCE {
+                return Err(format!("roster member {member} works {used} days a day but there are {} of it", aniimo.count));
+            }
         }
     }
     // The measurement build lets a building mix arrangements, which no whole layout can hold, so
@@ -1394,6 +1483,7 @@ pub fn to_production_plan(
                 cycle_time: None,
                 environment: None,
                 busy_units: None,
+                crew: None,
             });
             continue;
         }
@@ -1427,6 +1517,7 @@ pub fn to_production_plan(
                 cycle_time: Some(recipe.production_time),
                 environment: if grower { recipe.environment.clone() } else { None },
                 busy_units: (!grower).then(|| (rate * recipe.production_time).min(units as f64)),
+                crew: recipe.crew,
             });
         }
         if owned > used {
@@ -1440,6 +1531,7 @@ pub fn to_production_plan(
                 cycle_time: None,
                 environment: None,
                 busy_units: None,
+                crew: None,
             });
         }
     }

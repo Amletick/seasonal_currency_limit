@@ -132,6 +132,7 @@ fn test_production_item_creation() {
         byproduct: None,
         environment: None,
         season: None,
+        crew: None,
     };
 
     assert_eq!(item.name, "wheat");
@@ -160,6 +161,7 @@ fn test_processed_item_creation() {
         byproduct: None,
         environment: None,
         season: None,
+        crew: None,
     };
 
     assert_eq!(item.name, "wheatmeal");
@@ -236,6 +238,7 @@ fn timers_match_the_game() {
         byproduct: None,
         environment: None,
         season: None,
+        crew: None,
     };
     let readings = [
         // (recipe, facility, gathering, workload, required, Aniimo level, personality, seconds shown)

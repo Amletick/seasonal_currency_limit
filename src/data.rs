@@ -149,6 +149,7 @@ pub fn parse_season(csv_text: &str) -> Result<Vec<ProductionItem>, Box<dyn Error
                 points: row.points,
                 seed_cost: row.seed_cost.unwrap_or(0.0),
             }),
+            crew: None,
         });
     }
     Ok(items)
@@ -236,6 +237,7 @@ pub fn load_farmland(path: &Path) -> Result<Vec<ProductionItem>, Box<dyn Error>>
             byproduct: None,
             environment: row.environment,
             season: None,
+            crew: None,
         });
     }
     Ok(items)
@@ -290,6 +292,7 @@ pub fn load_woodland(path: &Path) -> Result<Vec<ProductionItem>, Box<dyn Error>>
                 .map(|amt| ("Wood Blocks".to_string(), amt)),
             environment: row.environment,
             season: None,
+            crew: None,
         });
     }
     Ok(items)
@@ -349,6 +352,7 @@ pub fn load_workload_raw_material(
             byproduct: byproduct_name.zip(row.byproduct_yield).map(|(name, amt)| (name.to_string(), amt)),
             environment: row.environment,
             season: None,
+            crew: None,
         });
     }
     Ok(items)
@@ -422,6 +426,7 @@ pub fn load_processing_with_energy(
             byproduct: None,
             environment: None,
             season: None,
+            crew: None,
         });
     }
     Ok(items)
@@ -478,6 +483,7 @@ pub fn load_processing_no_energy(
             byproduct: None,
             environment: None,
             season: None,
+            crew: None,
         });
     }
     Ok(items)

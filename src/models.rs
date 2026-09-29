@@ -42,6 +42,7 @@ pub fn byproduct_item(resource: &str) -> Option<&'static str> {
 ///     byproduct: None,
 ///     environment: None,
 ///     season: None,
+///     crew: None,
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -88,6 +89,9 @@ pub struct ProductionItem {
     pub environment: Option<String>,
     /// What a limited-time season adds to the item, or `None` outside one (see [`SeasonTerms`]).
     pub season: Option<SeasonTerms>,
+    /// Which member of the player's roster works this copy of the recipe (see
+    /// [`crew_variants`]), when planning with the Aniimo they actually have.
+    pub crew: Option<usize>,
 }
 
 /// The priority and currency name for a season's points (see [`SeasonTerms::points`]).
@@ -228,8 +232,122 @@ pub const UNCOVERED_SUFFIX: &str = "__uncovered";
 
 /// The crop behind an item name, which is the name itself unless it's an uncovered variant.
 pub fn base_item_name(name: &str) -> &str {
+    let name = name.split(CREW_SUFFIX).next().unwrap_or(name);
     name.strip_suffix(UNCOVERED_SUFFIX).unwrap_or(name)
 }
+
+/// Marks a recipe worked by one Aniimo on the player's roster, e.g. `milled_rice__by2` for the
+/// third (see [`crew_variants`]).
+pub const CREW_SUFFIX: &str = "__by";
+
+/// One kind of Aniimo on the player's roster: how many they have that are alike, the homeland
+/// abilities each has with its level (an Aniimo can have several, e.g. Fire 3 and Hauling 3), and
+/// its four personalities, one from each opposed pair.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RosterAniimo {
+    pub count: u32,
+    pub abilities: std::collections::BTreeMap<String, u32>,
+    pub personalities: Vec<String>,
+}
+
+impl RosterAniimo {
+    /// This Aniimo's level at `ability`, or 0 if it hasn't got it.
+    pub fn level(&self, ability: &str) -> u32 {
+        self.abilities.get(ability).copied().unwrap_or(0)
+    }
+}
+
+/// The Aniimo a player actually has, for planning with them rather than with as many of each as
+/// a plan wants. Each works any job its abilities allow, for as many hours as it has; the plan
+/// shares those out (see `crate::exact`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Crew {
+    pub members: Vec<RosterAniimo>,
+    /// Facilities whose Aniimo lives there and works nothing else (the Tidewhisper Sandcastle
+    /// and the like), so each unit in use takes one Aniimo's whole day.
+    pub residents: std::collections::BTreeSet<String>,
+    /// The ability each environment building needs of the Aniimo staffing it, e.g. `Heat
+    /// Furnace` needs Fire; each building in use takes one Aniimo's whole day.
+    pub environment: std::collections::BTreeMap<String, String>,
+    /// The personality each facility rewards with +20% speed, e.g. the Mine rewards Playful.
+    pub personalities: std::collections::BTreeMap<String, String>,
+}
+
+impl Crew {
+    /// The roster member a recipe copy made by [`crew_variants`] is worked by.
+    pub fn member_of(item: &ProductionItem) -> Option<usize> {
+        item.crew
+    }
+
+    /// The Aniimo `member` works `item` as: its level at the recipe's ability, and whether it has
+    /// the facility's personality.
+    pub fn worker(&self, member: usize, item: &ProductionItem, requirements: &AniimoRequirements) -> Option<Worker> {
+        let aniimo = self.members.get(member)?;
+        let (ability, _) = requirements.get(base_item_name(&item.name))?;
+        let bonus = has_personality_bonus(&item.facility)
+            && self.personalities.get(&item.facility).is_some_and(|p| aniimo.personalities.contains(p));
+        Some(Worker::new(aniimo.level(ability), bonus))
+    }
+}
+
+/// `items` for planning with `crew`: every recipe an Aniimo works gets one copy per roster member
+/// that can work it (it has the recipe's ability at the level it needs), each timed for that
+/// member and marked with it (see [`ProductionItem::crew`]). The recipe itself stays, for its sell
+/// value and timing, but can't be made as it is (its facility level is out of reach). A crop or
+/// tree stays only if someone can do each of its growing jobs other than watering; watering only
+/// speeds it up, so without a Water Aniimo it grows at its unwatered time (see
+/// [`apply_watering`]). Everything else is as it was.
+pub fn crew_variants(
+    items: Vec<ProductionItem>,
+    crew: &Crew,
+    requirements: &AniimoRequirements,
+    grower_steps: &GrowerSteps,
+) -> Vec<ProductionItem> {
+    let can = |ability: &str, level: u32| crew.members.iter().any(|m| m.count > 0 && m.level(ability) >= level);
+    let waters = can("Water", 1);
+    // Each crop's own watered grow time, which watering is measured against.
+    let watered: std::collections::HashMap<String, f64> = items
+        .iter()
+        .filter(|i| i.workload.is_none() && !i.name.ends_with(UNCOVERED_SUFFIX))
+        .map(|i| (i.name.clone(), i.production_time))
+        .collect();
+    let mut out = Vec::new();
+    for mut item in items {
+        match (item.workload, requirements.get(base_item_name(&item.name))) {
+            (Some(workload), Some((ability, required))) => {
+                for (member, aniimo) in crew.members.iter().enumerate() {
+                    if aniimo.count == 0 || aniimo.level(ability) < required {
+                        continue;
+                    }
+                    let mut variant = ProductionItem {
+                        name: format!("{}{CREW_SUFFIX}{member}", item.name),
+                        crew: Some(member),
+                        ..item.clone()
+                    };
+                    let worker = crew.worker(member, &variant, requirements).expect("a member that can work it");
+                    variant.production_time = worker.seconds_for_item(&variant, workload, required);
+                    out.push(variant);
+                }
+                item.facility_level = u32::MAX;
+                out.push(item);
+            }
+            (None, _) if item.production_time > 0.0 && item.raw_materials.is_none() => {
+                let jobs = grower_steps.get(base_item_name(&item.name));
+                if !jobs.iter().filter(|job| job.step != "Watering").all(|job| can(&job.ability, job.min_level)) {
+                    continue;
+                }
+                if !waters {
+                    let own = watered.get(base_item_name(&item.name)).copied().unwrap_or(item.production_time);
+                    item.production_time += 2.0 * WATERING_SAVES * own / (1.0 - 2.0 * WATERING_SAVES);
+                }
+                out.push(item);
+            }
+            _ => out.push(item),
+        }
+    }
+    out
+}
+
 
 /// How fast a crop needing `environment` grows with no environment building over it. Environments
 /// are steps of temperature (Freeze -2, Cool -1, none 0, Warm +1, Scorching +2), and a crop grows
@@ -764,6 +882,8 @@ pub struct PlanStep {
     /// On a producing processor row, how many of its `facility_count` units are busy on average
     /// (a unit waiting on ingredients frees its Aniimo for other work). `None` elsewhere.
     pub busy_units: Option<f64>,
+    /// When planning with the player's roster, which member works this row (see [`Crew`]).
+    pub crew: Option<usize>,
 }
 
 /// How many times a Farmland/Woodland plot needs to be (re-)planted with a fresh seed over the
@@ -1046,6 +1166,8 @@ pub struct FacilityCounts {
     /// report every facility as maximally unlocked, and [`FacilityCounts::only`] uses `(0, 1)` so
     /// unlisted facilities aren't owned at all.
     default_tier: (u32, u32),
+    /// The Aniimo the player has, when planning with them (see [`Crew`]).
+    crew: Option<Crew>,
 }
 
 impl Default for FacilityCounts {
@@ -1053,11 +1175,23 @@ impl Default for FacilityCounts {
         Self {
             facilities: std::collections::HashMap::new(),
             default_tier: (1, 1),
+            crew: None,
         }
     }
 }
 
 impl FacilityCounts {
+    /// Plans with the Aniimo in `crew` (see [`Crew`]), with items from [`crew_variants`].
+    pub fn set_crew(&mut self, crew: Crew) -> &mut Self {
+        self.crew = Some(crew);
+        self
+    }
+
+    /// The Aniimo the player has, if planning with them.
+    pub fn crew(&self) -> Option<&Crew> {
+        self.crew.as_ref()
+    }
+
     /// Creates an empty `FacilityCounts` (every facility defaults to count=1, level=1).
     pub fn new() -> Self {
         Self::default()
@@ -1091,6 +1225,7 @@ impl FacilityCounts {
         let mut fc = Self {
             facilities: std::collections::HashMap::new(),
             default_tier: (0, 1),
+            crew: None,
         };
         for (name, count, level) in pairs {
             fc.set(name, *count, *level);
@@ -1104,6 +1239,7 @@ impl FacilityCounts {
         Self {
             facilities: std::collections::HashMap::new(),
             default_tier: (1, 99),
+            crew: None,
         }
     }
 

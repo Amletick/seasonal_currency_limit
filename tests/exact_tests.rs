@@ -350,3 +350,109 @@ fn exact_uses_the_fewest_environment_buildings() {
     let recomputed = check_plan(&plan, &items, "coins", &counts, &ModuleLevels::default(), None).unwrap();
     assert!((plan.objective - recomputed).abs() < 1e-9, "objective {} vs {recomputed}", plan.objective);
 }
+
+/// The data's items reworked for `crew` (see `aniimax::models::crew_variants`).
+fn crew_items(crew: &aniimax::models::Crew) -> Option<Vec<ProductionItem>> {
+    let items = load_items()?;
+    let requirements = load_aniimo_requirements(Path::new("data")).unwrap();
+    let steps = aniimax::data::load_grower_steps(Path::new("data")).unwrap();
+    Some(aniimax::models::crew_variants(items, crew, &requirements, &steps))
+}
+
+/// A roster of `(count, [(ability, level)])`, with the game's environment buildings and no
+/// personality bonuses.
+fn crew_of(members: &[(u32, &[(&str, u32)])]) -> aniimax::models::Crew {
+    aniimax::models::Crew {
+        members: members
+            .iter()
+            .map(|(count, abilities)| aniimax::models::RosterAniimo {
+                count: *count,
+                abilities: abilities.iter().map(|(a, l)| (a.to_string(), *l)).collect(),
+                personalities: Vec::new(),
+            })
+            .collect(),
+        residents: ["Tidewhisper Sandcastle", "Dewy House", "Nimbus Bed", "Starfall Hammock", "Floral Windmill"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        environment: [("Heat Furnace", "Fire"), ("Cooling Unit", "Ice"), ("Sunlamp", "Light")]
+            .into_iter()
+            .map(|(b, a)| (b.to_string(), a.to_string()))
+            .collect(),
+        personalities: Default::default(),
+    }
+}
+
+fn solve_with_crew(counts: &FacilityCounts, crew: aniimax::models::Crew) -> (ExactPlan, Vec<ProductionItem>) {
+    let items = crew_items(&crew).expect("data");
+    let mut counts = counts.clone();
+    counts.set_crew(crew);
+    let modules = ModuleLevels::default();
+    let plan = solve_exact(&items, "coins", &counts, &modules, Goal::Earn { floors: &[] }, Some(Duration::from_secs(60)), None)
+        .expect("exact plan");
+    assert!(plan.proven_optimal, "not proven optimal");
+    check_plan(&plan, &items, "coins", &counts, &modules, None).expect("plan passes its re-check");
+    (plan, items)
+}
+
+// Four Mines, but only one level-4 Earth Aniimo to work them: it has one day to spread over the
+// four, so the plan makes exactly a quarter of what four such Aniimo would.
+#[test]
+fn crew_one_aniimo_works_one_day() {
+    if load_items().is_none() {
+        return;
+    }
+    let counts = FacilityCounts::only(&[("Mine", 4, 3)]);
+    let (one, _) = solve_with_crew(&counts, crew_of(&[(1, &[("Earth", 4)])]));
+    let (four, _) = solve_with_crew(&counts, crew_of(&[(4, &[("Earth", 4)])]));
+    assert!(four.rate_per_second > 0.0);
+    assert!((one.rate_per_second * 4.0 - four.rate_per_second).abs() < 1e-9, "one {} vs four {}", one.rate_per_second, four.rate_per_second);
+}
+
+// A Heat Furnace needs a Fire Aniimo on it all day. Without one, Sugarcane (which wants Scorching)
+// can only grow uncovered; with one, it's covered and the plan says who staffs the Furnace.
+// Farmland jobs need Earth, Grass and Dark, so the roster has someone for those too.
+#[test]
+fn crew_staffs_environment_buildings() {
+    if load_items().is_none() {
+        return;
+    }
+    let counts = FacilityCounts::only(&[("Farmland", 3, 5), ("Heat Furnace", 1, 1)]);
+    let farmer: &[(&str, u32)] = &[("Earth", 1), ("Grass", 1), ("Dark", 1)];
+    let (without, _) = solve_with_crew(&counts, crew_of(&[(1, farmer)]));
+    assert!(without.environment.is_empty() && without.staffing.is_empty(), "no one to staff it: {:?}", without.environment);
+    let (with, _) = solve_with_crew(&counts, crew_of(&[(1, farmer), (1, &[("Fire", 1)])]));
+    assert_eq!(with.environment.iter().map(|e| e.count).sum::<u32>(), 1);
+    assert_eq!(with.staffing.len(), 1);
+    assert_eq!(with.staffing[0].1, 1, "staffed by the Fire Aniimo");
+    assert!((with.staffing[0].2 - 1.0).abs() < 1e-9);
+    assert!(with.rate_per_second > without.rate_per_second);
+}
+
+// Nobody to sow or reap: no crop can be grown at all.
+#[test]
+fn crew_crops_need_their_jobs_done() {
+    if load_items().is_none() {
+        return;
+    }
+    let counts = FacilityCounts::only(&[("Farmland", 3, 5)]);
+    let (plan, _) = solve_with_crew(&counts, crew_of(&[(2, &[("Fire", 3)])]));
+    assert!(plan.recipe_rates.is_empty(), "grew {:?}", plan.recipe_rates);
+}
+
+
+// Watering only speeds crops up: with nobody to water them they still grow, at their unwatered
+// time. Six level-2 plots of potato (2 per batch, sells for 8, seed 1) take 640s unwatered and
+// 480s watered.
+#[test]
+fn crew_without_water_grows_unwatered() {
+    if load_items().is_none() {
+        return;
+    }
+    let counts = FacilityCounts::only(&[("Farmland", 6, 2)]);
+    let farmer: &[(&str, u32)] = &[("Earth", 1), ("Grass", 1), ("Dark", 1)];
+    let (dry, _) = solve_with_crew(&counts, crew_of(&[(1, farmer)]));
+    let (wet, _) = solve_with_crew(&counts, crew_of(&[(1, farmer), (1, &[("Water", 1)])]));
+    assert!((dry.rate_per_second - 6.0 * 15.0 / 640.0).abs() < 1e-9, "unwatered {}", dry.rate_per_second);
+    assert!((wet.rate_per_second - 6.0 * 15.0 / 480.0).abs() < 1e-9, "watered {}", wet.rate_per_second);
+}
