@@ -131,6 +131,8 @@ fn test_production_item_creation() {
         workload: None,
         byproduct: None,
         environment: None,
+        season: None,
+        crew: None,
     };
 
     assert_eq!(item.name, "wheat");
@@ -158,6 +160,8 @@ fn test_processed_item_creation() {
         workload: None,
         byproduct: None,
         environment: None,
+        season: None,
+        crew: None,
     };
 
     assert_eq!(item.name, "wheatmeal");
@@ -233,6 +237,8 @@ fn timers_match_the_game() {
         workload: None,
         byproduct: None,
         environment: None,
+        season: None,
+        crew: None,
     };
     let readings = [
         // (recipe, facility, gathering, workload, required, Aniimo level, personality, seconds shown)
@@ -251,4 +257,14 @@ fn timers_match_the_game() {
             Worker::new(level, personality).seconds_for_item(&item(recipe, facility, gathering), workload, required);
         assert!((seconds - shown).abs() < 1.0, "{recipe}: {seconds}s, game shows {shown}s");
     }
+}
+
+// Only a trailing `__by<member>` marks a roster copy.
+#[test]
+fn base_item_name_strips_roster_and_uncovered_suffixes() {
+    use aniimax::models::base_item_name;
+    assert_eq!(base_item_name("milled_rice__by12"), "milled_rice");
+    assert_eq!(base_item_name("rose__uncovered"), "rose");
+    assert_eq!(base_item_name("made__by_hand"), "made__by_hand");
+    assert_eq!(base_item_name("rice__by"), "rice__by");
 }

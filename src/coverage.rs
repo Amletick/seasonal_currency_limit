@@ -89,6 +89,21 @@ impl Rect {
         Rect { x1: x, y1: y, x2: x + w, y2: y + w }
     }
 
+    fn area(&self) -> f64 {
+        (self.x2 - self.x1).max(0.0) * (self.y2 - self.y1).max(0.0)
+    }
+
+    /// The part of this rectangle inside `o`, or `None` when they don't meet.
+    fn meet(&self, o: &Rect) -> Option<Rect> {
+        let met = Rect {
+            x1: self.x1.max(o.x1),
+            y1: self.y1.max(o.y1),
+            x2: self.x2.min(o.x2),
+            y2: self.y2.min(o.y2),
+        };
+        (met.x2 > met.x1 + EPS && met.y2 > met.y1 + EPS).then_some(met)
+    }
+
     /// Real (positive-area) overlap; a shared edge or corner alone does not count. See this
     /// module's doc comment for the coverage rule this implements.
     fn overlaps(&self, o: &Rect) -> bool {
@@ -695,6 +710,12 @@ fn fallback_layout(building: f64, counts: &[(String, u32)]) -> Option<Vec<Placem
         .min_by(|a, b| spread(a).partial_cmp(&spread(b)).unwrap_or(std::cmp::Ordering::Equal))
 }
 
+/// How much of a plot hanging outside the coverage it sits in counts against an arrangement, per
+/// tile of area. A plot only has to overlap the square, so hanging over the edge is allowed and
+/// sometimes the only way to fit them all; this just settles it the other way when there's room,
+/// since a plot half outside the colour reads as a mistake to anyone looking at the diagram.
+const OVERHANG_COST: f64 = 0.4;
+
 /// How much a full shared side between two plots is worth, in tiles of distance, in
 /// [`nearest_layout`]: enough to line plots up in rows and columns, not so much that they drift
 /// away from the building to do it.
@@ -1171,6 +1192,7 @@ pub fn pair_layout_for(sizes: PairSizes, types: &[&str], offset: Offset, counts:
 /// are placed at once, so plots never land on each other. `None` if those counts can't be placed
 /// this way, in which case the packing's own layout stands.
 pub fn tidy_pair_layout(sizes: PairSizes, types: &[&str], offset: Offset, counts: &[Vec<u32>; 3]) -> Option<[Vec<Placement>; 3]> {
+    let (a, b) = pair_coverage(sizes, offset);
     let (first, second) = (sizes.first / 2.0, sizes.second / 2.0);
     let (dx, dy) = offset.as_f64();
     // Where each zone's plots gather: its own building, or between them for the shared zone.
@@ -1187,7 +1209,8 @@ pub fn tidy_pair_layout(sizes: PairSizes, types: &[&str], offset: Offset, counts
         for (placement, zone) in pair_candidates(sizes, facility, size, offset) {
             let (ax, ay) = anchors[zone as usize];
             let (ox, oy) = (placement.x + size / 2.0 - ax, placement.y + size / 2.0 - ay);
-            vars.push((placement, problem.add_binary_var(ox.hypot(oy))));
+            let cost = ox.hypot(oy) + OVERHANG_COST * outside_coverage(&placement.rect(), &a, &b);
+            vars.push((placement, problem.add_binary_var(cost)));
             tagged.push((t, zone));
         }
     }
@@ -1245,6 +1268,14 @@ pub fn tidy_pair_layout(sizes: PairSizes, types: &[&str], offset: Offset, counts
         }
     }
     Some(layouts)
+}
+
+/// How much of `plot` lies outside both coverage squares. Zero for a plot sitting wholly within
+/// the ground the pair covers.
+fn outside_coverage(plot: &Rect, a: &Rect, b: &Rect) -> f64 {
+    let inside = plot.meet(a).map_or(0.0, |r| r.area()) + plot.meet(b).map_or(0.0, |r| r.area())
+        - a.meet(b).and_then(|shared| plot.meet(&shared)).map_or(0.0, |r| r.area());
+    (plot.area() - inside).max(0.0)
 }
 
 /// Shared across threads: the geometry never changes, and working a pair out takes seconds, so

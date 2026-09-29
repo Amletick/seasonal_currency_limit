@@ -13,8 +13,9 @@
 // `unlocks` maps each facility level to the RV (Homeland) level that unlocks it. `counts[i]` is how
 // many of the facility you can place at RV level i + 1; an RV level past the end of the list keeps
 // the last count. Simple mode uses both (see `simpleSetup`). Counts are confirmed in game up to RV
-// level 12 for the Heat Furnace and Simmering Pot and RV level 11 for the rest; past that,
-// Farmland, Woodland and Mine follow the game's pattern and the others keep their last count.
+// level 13 for the Cooling Unit, Sunlamp and Phonolfactory Table, RV level 12 for the Heat
+// Furnace and Simmering Pot and RV level 11 for the rest; past that, Farmland, Woodland and Mine
+// follow the game's pattern and the others keep their last count.
 //
 // Facilities marked "Not yet verified in game" in their tooltip haven't had their numbers
 // confirmed in game yet.
@@ -82,13 +83,13 @@ export const FACILITIES = [
     {
         name: 'Cooling Unit', slug: 'cooling-unit', defaultCount: 0, category: 'Environment', hasLevels: false,
         unlocks: { 1: 7 },
-        counts: [0, 0, 0, 0, 0, 0, 1],
+        counts: [0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 2],
         tooltip: "Provides Cool or Freeze growing conditions for crops that need one&#10;The calculator picks whichever mode is more profitable.&#10;Covers a 9x9 area around itself; how many plots fit depends on what shares it."
     },
     {
         name: 'Sunlamp', slug: 'sunlamp', defaultCount: 0, category: 'Environment', hasLevels: false,
         unlocks: { 1: 9 },
-        counts: [0, 0, 0, 0, 0, 0, 0, 0, 1],
+        counts: [0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2],
         tooltip: "Provides Adequate growing conditions for crops that need one&#10;Covers a 9x9 area around itself; how many plots fit depends on what shares it."
     },
     {
@@ -124,7 +125,7 @@ export const FACILITIES = [
     {
         name: 'Phonolfactory Table', slug: 'phonolfactory-table', defaultCount: 0, category: 'Materials Processing', hasWorker: true, ability: 'Perfumery', personality: 'Instinctive',
         unlocks: { 1: 6, 2: 7, 3: 10, 4: 14, 5: 17, 6: 19 },
-        counts: [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+        counts: [0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 2],
         tooltip: "Lv.1: Bamboo Joss Stick&#10;Lv.2: Rose Incense, Cherry Incense&#10;Lv.3: Lavender Incense, Lemon Incense, Advanced Lemon Incense&#10;Lv.4: Herbal Ginseng Aroma&#10;Lv.5: Soap, Premium Soap&#10;Lv.6: Orange Flower Incense, Mixed Perfume, Lotion, Premium Mixed Perfume"
     },
     {
@@ -155,7 +156,7 @@ export const FACILITIES = [
         name: 'Dance Pad Polisher', slug: 'dance-pad-polisher', defaultCount: 0, category: 'Materials Processing', hasWorker: true, ability: 'Lightning',
         unlocks: { 1: 2, 2: 5, 3: 7 },
         counts: [0, 1],
-        tooltip: "Lv.1: Growth Bud&#10;Lv.2: Growth Flower&#10;Lv.3: Growth Fruit&#10;Makes Aniimo EXP, not coins.&#10;Unlock levels not yet confirmed in game."
+        tooltip: "Lv.1: Growth Bud&#10;Lv.2: Growth Flower&#10;Lv.3: Growth Fruit&#10;Makes Aniimo EXP, not Home Coins.&#10;Unlock levels not yet confirmed in game."
     },
     {
         name: 'Aniipod Maker', slug: 'aniipod-maker', defaultCount: 0, category: 'Materials Processing', hasWorker: true, ability: 'Lightning',
@@ -192,6 +193,25 @@ export const SPECIAL_RECIPES = [
     { name: 'lotion', facility: 'Phonolfactory Table' },
 ];
 
+// The Harvest Moon Festival, from RV 10: season crops' seeds cost Moonray Wheat, which season
+// orders pay out, and every season item sold counts points on top of its coins. Wheat is taken as
+// unlimited; plans show how much their seeds use. The recipes and seed costs are in
+// data/harvest_moon_festival.csv.
+export const SEASON = {
+    name: 'Harvest Moon Festival',
+    currency: 'Moonray Wheat',
+    points: 'Harvest Moon Points',
+    minHomeLevel: 10,
+    // Recipes unlocked with Recipe Notes; plans only use the ones the player ticks. The season's
+    // other recipes come unlocked.
+    recipeNotes: [
+        { name: 'harvest_platter' },
+        { name: 'umbral_pickle' },
+        { name: 'umbral_hot_pot' },
+        { name: 'umbral_sweet_and_spicy_sauce' },
+    ],
+};
+
 // What reaching each RV level costs: coins, plus raw Wood Blocks and Mineral Sand up to RV 6 and
 // one Woodworking Bench item and one Chimney Kiln item from RV 7.
 export const LEVEL_UP_COSTS = {
@@ -221,6 +241,49 @@ export const LEVEL_UP_COSTS = {
 export const LEVEL_UP_CHAINS = [
     ['wood_block', 'rough_lumber', 'standard_planks', 'laminated_beams', 'densified_timber_component'],
     ['mineral_sand', 'coarse_sifted_ore', 'sintered_ore_brick', 'refined_ore', 'microcrystalline_ore_plate'],
+];
+
+// How much ground each facility takes, in tiles, measured in game. Not all are square, and
+// several sit on half tiles: the Blazing Stove snaps to a gridline of its own. The Storage Unit
+// is here too, since a layout has to place it even though it produces nothing.
+export const FACILITY_FOOTPRINTS = {
+    'Farmland': [2, 2],
+    'Woodland': [4, 4],
+    'Mine': [5, 5],
+    'Well': [2, 2],
+    'Tidewhisper Sandcastle': [5, 5],
+    'Dewy House': [2, 2],
+    'Nimbus Bed': [5, 5],
+    'Starfall Hammock': [5, 5],
+    'Floral Windmill': [5, 5],
+    'Heat Furnace': [1, 1],
+    'Cooling Unit': [2, 2],
+    'Sunlamp': [1, 1],
+    'Carousel Mill': [5.5, 5.5],
+    'Crafting Table': [4, 4],
+    'Claw Game Cooker': [3.5, 3.5],
+    'Simmering Pot': [1.5, 1.5],
+    'Phonolfactory Table': [3.5, 3.5],
+    'Bouncy Brew Keg': [3, 3],
+    'Blazing Stove': [2.5, 1.75],
+    'Pickling Jar': [2.5, 2],
+    'Jukebox Dryer': [2.5, 2.5],
+    'Joy Wheel Loom': [4, 4],
+    'Woodworking Bench': [2, 1.5],
+    'Chimney Kiln': [5.5, 5.5],
+    'Dance Pad Polisher': [2.5, 2.5],
+    'Aniipod Maker': [4.5, 4.5],
+    'Storage Unit': [2, 2],
+};
+
+// The homeland: a 4x4 grid of plots, each 20 tiles wide and 15 tall, plot n opening at RV n (and
+// all of them from RV 16). Rows from the top, by plot number; the first opens bottom middle.
+export const HOMELAND_PLOT_SIZE = { w: 20, h: 15 };
+export const HOMELAND_PLOTS = [
+    [13, 14, 15, 16],
+    [12, 7, 8, 9],
+    [11, 4, 3, 6],
+    [10, 2, 1, 5],
 ];
 
 // An Aniimo carries four personalities at once, one from each of these opposed pairs, which the

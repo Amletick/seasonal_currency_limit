@@ -41,6 +41,8 @@ pub fn byproduct_item(resource: &str) -> Option<&'static str> {
 ///     workload: None,
 ///     byproduct: None,
 ///     environment: None,
+///     season: None,
+///     crew: None,
 /// };
 /// ```
 #[derive(Debug, Clone)]
@@ -85,6 +87,40 @@ pub struct ProductionItem {
     /// actually cover, not just by how many plots they own; see
     /// `crate::optimizer::solve_facility_allocation`.
     pub environment: Option<String>,
+    /// What a limited-time season adds to the item, or `None` outside one (see [`SeasonTerms`]).
+    pub season: Option<SeasonTerms>,
+    /// Which member of the player's roster works this copy of the recipe (see
+    /// [`crew_variants`]), when planning with the Aniimo they actually have.
+    pub crew: Option<usize>,
+}
+
+/// The priority and currency name for a season's points (see [`SeasonTerms::points`]).
+pub const SEASON_POINTS: &str = "season_points";
+
+/// A season item's terms, e.g. for the Harvest Moon Festival an Umbral Hot Pot sells for 2150
+/// coins and 8 points, and a Moondew Radish's seeds cost 4 Moonray Wheat. Season orders pay out
+/// far more of the season currency than seeds cost, so plans treat it as unlimited and only
+/// report what the seeds take.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SeasonTerms {
+    /// Season points per unit sold, on top of its coins.
+    pub points: f64,
+    /// Season currency the seeds for one batch cost; 0 for anything that isn't a season crop.
+    pub seed_cost: f64,
+}
+
+impl ProductionItem {
+    /// What one unit sold earns of `currency`: its sell value if it sells for that, or its season
+    /// points for [`SEASON_POINTS`].
+    pub fn earns(&self, currency: &str) -> f64 {
+        if currency == SEASON_POINTS {
+            self.season.map_or(0.0, |s| s.points)
+        } else if self.sell_currency == currency {
+            self.sell_value
+        } else {
+            0.0
+        }
+    }
 }
 
 /// Efficiency at a processor for an Aniimo `above` levels above what the recipe needs, whatever
@@ -150,6 +186,19 @@ pub fn efficiency(level: u32, required: u32, gathering: bool) -> f64 {
 /// The highest ability level an Aniimo reaches.
 pub const MAX_ANIIMO_LEVEL: u32 = 4;
 
+/// Abilities to assume less than [`MAX_ANIIMO_LEVEL`] of unless the player says otherwise. There
+/// is no level-4 Perfumery Aniimo in the game yet, so planning for one would promise a speed
+/// nobody can reach; a player who has one anyway can still say so.
+const ABILITY_DEFAULTS: &[(&str, u32)] = &[("Perfumery", 3)];
+
+/// The level to assume of `ability` when the player hasn't said (see [`ABILITY_DEFAULTS`]).
+pub fn default_level_for(ability: &str) -> u32 {
+    ABILITY_DEFAULTS
+        .iter()
+        .find(|(name, _)| *name == ability)
+        .map_or(MAX_ANIIMO_LEVEL, |(_, level)| *level)
+}
+
 /// Facilities with no personality bonus at all, so no Aniimo works them faster than the level
 /// alone gives (checked in game on the Dance Pad Polisher and Aniipod Maker).
 pub const FACILITIES_WITHOUT_PERSONALITY: [&str; 2] = ["Dance Pad Polisher", "Aniipod Maker"];
@@ -181,10 +230,130 @@ pub fn no_personality_efficiency(level: u32, required: u32) -> f64 {
 /// [`add_uncovered_variants`]).
 pub const UNCOVERED_SUFFIX: &str = "__uncovered";
 
-/// The crop behind an item name, which is the name itself unless it's an uncovered variant.
+/// The recipe or crop behind an item name: the name without a roster copy's `__by<member>` (see
+/// [`crew_variants`]) or an uncovered variant's suffix.
 pub fn base_item_name(name: &str) -> &str {
+    let name = match name.rsplit_once(CREW_SUFFIX) {
+        Some((base, member)) if !member.is_empty() && member.bytes().all(|b| b.is_ascii_digit()) => base,
+        _ => name,
+    };
     name.strip_suffix(UNCOVERED_SUFFIX).unwrap_or(name)
 }
+
+/// Marks a recipe worked by one Aniimo on the player's roster, e.g. `milled_rice__by2` for the
+/// third (see [`crew_variants`]).
+pub const CREW_SUFFIX: &str = "__by";
+
+/// One kind of Aniimo on the player's roster: how many they have that are alike, the homeland
+/// abilities each has with its level (an Aniimo can have several, e.g. Fire 3 and Hauling 3), and
+/// its four personalities, one from each opposed pair.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RosterAniimo {
+    pub count: u32,
+    pub abilities: std::collections::BTreeMap<String, u32>,
+    pub personalities: Vec<String>,
+}
+
+impl RosterAniimo {
+    /// This Aniimo's level at `ability`, or 0 if it hasn't got it.
+    pub fn level(&self, ability: &str) -> u32 {
+        self.abilities.get(ability).copied().unwrap_or(0)
+    }
+}
+
+/// The Aniimo a player actually has, for planning with them rather than with as many of each as
+/// a plan wants. Each works any job its abilities allow, for as many hours as it has; the plan
+/// shares those out (see `crate::exact`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Crew {
+    pub members: Vec<RosterAniimo>,
+    /// Facilities whose Aniimo lives there and works nothing else (the Tidewhisper Sandcastle
+    /// and the like), so each unit in use takes one Aniimo's whole day.
+    pub residents: std::collections::BTreeSet<String>,
+    /// The ability each environment building needs of the Aniimo staffing it, e.g. `Heat
+    /// Furnace` needs Fire; each building in use takes one Aniimo's whole day.
+    pub environment: std::collections::BTreeMap<String, String>,
+    /// The personality each facility rewards with +20% speed, e.g. the Mine rewards Playful.
+    pub personalities: std::collections::BTreeMap<String, String>,
+}
+
+impl Crew {
+    /// The Aniimo `member` works `item` as: its level at the recipe's ability, and whether it has
+    /// the facility's personality.
+    pub fn worker(&self, member: usize, item: &ProductionItem, requirements: &AniimoRequirements) -> Option<Worker> {
+        let aniimo = self.members.get(member)?;
+        let (ability, _) = requirements.get(base_item_name(&item.name))?;
+        let bonus = has_personality_bonus(&item.facility)
+            && self.personalities.get(&item.facility).is_some_and(|p| aniimo.personalities.contains(p));
+        Some(Worker::new(aniimo.level(ability), bonus))
+    }
+}
+
+/// `items` for planning with `crew`: every recipe an Aniimo works gets one copy per roster member
+/// that can work it (it has the recipe's ability at the level it needs), each timed for that
+/// member and marked with it (see [`ProductionItem::crew`]). The recipe itself stays, for its sell
+/// value and timing, but can't be made as it is (its facility level is out of reach). A crop or
+/// tree stays only if someone can do each of its growing jobs other than watering; watering only
+/// speeds it up, so without a Water Aniimo it grows at its unwatered time (see
+/// [`apply_watering`]). Everything else is as it was.
+pub fn crew_variants(
+    items: Vec<ProductionItem>,
+    crew: &Crew,
+    requirements: &AniimoRequirements,
+    grower_steps: &GrowerSteps,
+) -> Vec<ProductionItem> {
+    let can = |ability: &str, level: u32| crew.members.iter().any(|m| m.count > 0 && m.level(ability) >= level);
+    let waters = can("Water", 1);
+    // Each crop's own watered grow time, which watering is measured against.
+    let watered: std::collections::HashMap<String, f64> = items
+        .iter()
+        .filter(|i| i.workload.is_none() && !i.name.ends_with(UNCOVERED_SUFFIX))
+        .map(|i| (i.name.clone(), i.production_time))
+        .collect();
+    let mut out = Vec::new();
+    for mut item in items {
+        match (item.workload, requirements.get(base_item_name(&item.name))) {
+            (Some(workload), Some((ability, required))) => {
+                let mut fastest = f64::INFINITY;
+                for (member, aniimo) in crew.members.iter().enumerate() {
+                    if aniimo.count == 0 || aniimo.level(ability) < required {
+                        continue;
+                    }
+                    let mut variant = ProductionItem {
+                        name: format!("{}{CREW_SUFFIX}{member}", item.name),
+                        crew: Some(member),
+                        ..item.clone()
+                    };
+                    let worker = crew.worker(member, &variant, requirements).expect("a member that can work it");
+                    variant.production_time = worker.seconds_for_item(&variant, workload, required);
+                    fastest = fastest.min(variant.production_time);
+                    out.push(variant);
+                }
+                // Kept for its price and timing only: the wait for a first batch is the fastest
+                // member's.
+                item.facility_level = u32::MAX;
+                if fastest.is_finite() {
+                    item.production_time = fastest;
+                }
+                out.push(item);
+            }
+            (None, _) if item.production_time > 0.0 && item.raw_materials.is_none() => {
+                let jobs = grower_steps.get(base_item_name(&item.name));
+                if !jobs.iter().filter(|job| job.step != "Watering").all(|job| can(&job.ability, job.min_level)) {
+                    continue;
+                }
+                if !waters {
+                    let own = watered.get(base_item_name(&item.name)).copied().unwrap_or(item.production_time);
+                    item.production_time += 2.0 * WATERING_SAVES * own / (1.0 - 2.0 * WATERING_SAVES);
+                }
+                out.push(item);
+            }
+            _ => out.push(item),
+        }
+    }
+    out
+}
+
 
 /// How fast a crop needing `environment` grows with no environment building over it. Environments
 /// are steps of temperature (Freeze -2, Cool -1, none 0, Warm +1, Scorching +2), and a crop grows
@@ -299,7 +468,7 @@ pub const PERSONALITY_BONUS: f64 = 1.2;
 /// // Coarse-Sifted Ore needs level 2: a level-2 Aniimo takes the full 34s.
 /// assert_eq!(Worker::new(2, false).seconds_for(34.0, 2, false), 34.0);
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Worker {
     /// Ability level for the facility's element, 1 to 4.
     pub suitability: u32,
@@ -359,7 +528,7 @@ impl Worker {
 /// assert_eq!(workers.get("Carousel Mill").seconds_for(108.0, 1, false), 27.0);
 /// assert_eq!(workers.get("Jukebox Dryer"), Worker::default());
 /// ```
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Workers {
     by_facility: std::collections::HashMap<String, Worker>,
 }
@@ -392,32 +561,78 @@ impl Workers {
     }
 }
 
+/// The ability levels a plan may assume. Aniimo level up by ability, so a player can have a
+/// level-4 Earth one for the Mine and only a level-3 Leisure one for the Starfall Hammock; the
+/// level asked for is per ability, and capped by whatever the game itself allows (see
+/// [`max_level_for`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AniimoLevels {
+    /// What to assume for an ability the player hasn't spoken for.
+    pub default: u32,
+    /// The levels the player has said they have.
+    pub by_ability: std::collections::BTreeMap<String, u32>,
+}
+
+impl AniimoLevels {
+    /// Every ability at `level`, as far as the game allows.
+    pub fn all(level: u32) -> Self {
+        AniimoLevels { default: level, by_ability: Default::default() }
+    }
+
+    /// The level to plan for at `ability`.
+    ///
+    /// ```
+    /// use aniimax::models::AniimoLevels;
+    ///
+    /// let mut levels = AniimoLevels::all(4);
+    /// levels.by_ability.insert("Leisure".to_string(), 3);
+    /// assert_eq!(levels.level_for("Earth"), 4);
+    /// assert_eq!(levels.level_for("Leisure"), 3);
+    /// // No level-4 Perfumery Aniimo exists yet, so one isn't assumed...
+    /// assert_eq!(levels.level_for("Perfumery"), 3);
+    /// // ...but a player who has one can say so.
+    /// levels.by_ability.insert("Perfumery".to_string(), 4);
+    /// assert_eq!(levels.level_for("Perfumery"), 4);
+    /// ```
+    pub fn level_for(&self, ability: &str) -> u32 {
+        self.by_ability
+            .get(ability)
+            .copied()
+            .unwrap_or_else(|| self.default.min(default_level_for(ability)))
+            .clamp(1, MAX_ANIIMO_LEVEL)
+    }
+}
+
 /// Which Aniimo a plan assumes on every workload-based facility, when the player hasn't said
 /// which Aniimo they have. The calculator plans both and lets the player pick.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AniimoSetup {
     /// Each recipe worked by an Aniimo at exactly the ability level it requires, without the
     /// personality bonus: the least a player needs to run the plan at all.
     Minimum,
-    /// An Aniimo at this ability level with the facility's personality bonus everywhere: the
-    /// fastest setup a player with Aniimo that good can have. At [`MAX_ANIIMO_LEVEL`] that's 600%
-    /// on a processor's level-1 recipe and 480% on a level-2 one, or 300% and 216% at a gathering
-    /// facility; a level lower, 480% and 360%, or 240% and 168% (see [`efficiency`]). Level-4
-    /// Aniimo are hard to come by, so a player can plan for level 3 instead.
-    Best(u32),
+    /// The Aniimo the player says works each facility, for a roster that doesn't fit either of
+    /// the other two: a level-4 Fire one on the Blazing Stove but no Practical for the Chimney
+    /// Kiln, say. A facility not named falls back to [`Worker::default`].
+    PerFacility(Workers),
+    /// The best Aniimo the player says they have on every job, with the facility's personality
+    /// bonus. At level 4 that's 600% on a processor's level-1 recipe and 480% on a level-2 one,
+    /// or 300% and 216% at a gathering facility; a level lower, 480% and 360%, or 240% and 168%
+    /// (see [`efficiency`]). Level-4 Aniimo are hard to come by, and by ability, so the levels
+    /// are given per ability.
+    Best(AniimoLevels),
 }
 
 /// The Aniimo ability and minimum ability level each workload-based recipe needs (see
 /// `data/aniimo_requirements.csv`). Crops and trees aren't listed; their grow time is fixed.
 ///
 /// ```
-/// use aniimax::models::{AniimoRequirements, AniimoSetup};
+/// use aniimax::models::{AniimoLevels, AniimoRequirements, AniimoSetup};
 ///
 /// let mut reqs = AniimoRequirements::default();
 /// reqs.insert("lavender_powder", "Wind", 2);
 /// assert_eq!(reqs.get("lavender_powder"), Some(("Wind", 2)));
-/// assert_eq!(reqs.worker_for("lavender_powder", AniimoSetup::Minimum).suitability, 2);
-/// assert_eq!(reqs.worker_for("lavender_powder", AniimoSetup::Best(4)).suitability, 4);
+/// assert_eq!(reqs.worker_for("lavender_powder", &AniimoSetup::Minimum).suitability, 2);
+/// assert_eq!(reqs.worker_for("lavender_powder", &AniimoSetup::Best(AniimoLevels::all(4))).suitability, 4);
 /// ```
 #[derive(Debug, Clone, Default)]
 pub struct AniimoRequirements {
@@ -438,22 +653,33 @@ impl AniimoRequirements {
     /// The Aniimo `setup` puts on `item`. An item without a listed requirement gets a level-1
     /// Aniimo under [`AniimoSetup::Minimum`]. Assumes the facility has a personality bonus; see
     /// [`AniimoRequirements::worker_for_at`] for one that may not.
-    pub fn worker_for(&self, item: &str, setup: AniimoSetup) -> Worker {
+    pub fn worker_for(&self, item: &str, setup: &AniimoSetup) -> Worker {
         self.worker_for_at(item, "", setup)
     }
 
     /// The Aniimo `setup` puts on `item` at `facility`, which decides whether the Best setup gets
     /// a personality bonus (see [`has_personality_bonus`]).
-    pub fn worker_for_at(&self, item: &str, facility: &str, setup: AniimoSetup) -> Worker {
+    pub fn worker_for_at(&self, item: &str, facility: &str, setup: &AniimoSetup) -> Worker {
         match setup {
-            AniimoSetup::Best(level) => Worker::new(level, has_personality_bonus(facility)),
+            AniimoSetup::Best(levels) => {
+                let ability = self.get(item).map_or("", |(ability, _)| ability);
+                Worker::new(levels.level_for(ability), has_personality_bonus(facility))
+            }
+            // A facility with no personality of its own never gets the bonus, whatever is said.
+            AniimoSetup::PerFacility(workers) => {
+                let worker = workers.get(facility);
+                Worker::new(
+                    worker.suitability.clamp(1, MAX_ANIIMO_LEVEL),
+                    worker.personality_bonus && has_personality_bonus(facility),
+                )
+            }
             AniimoSetup::Minimum => Worker::new(self.get(item).map_or(1, |(_, level)| level), false),
         }
     }
 
     /// Recomputes every workload-based item's `production_time` for the Aniimo `setup` puts on
     /// it. Crops and trees keep their fixed grow time.
-    pub fn apply(&self, setup: AniimoSetup, items: &mut [ProductionItem]) {
+    pub fn apply(&self, setup: &AniimoSetup, items: &mut [ProductionItem]) {
         for item in items.iter_mut() {
             if let Some(workload) = item.workload {
                 let required = self.get(&item.name).map_or(1, |(_, level)| level);
@@ -648,8 +874,9 @@ pub struct PlanStep {
     /// re-dedicated). NOT the same thing as "needs a seed": only Farmland and Woodland are
     /// actually planted; see `SeedRequirement`'s doc comment.
     pub is_grower: bool,
-    /// Seconds for one full production cycle of `item_name` at this facility. `None` for
-    /// Idle/NothingAvailable/NotNeeded rows, since nothing is cycling there.
+    /// Seconds for one full production cycle of `item_name` at this facility: a crop's grow time,
+    /// or one batch at a processor. `None` for Idle/NothingAvailable/NotNeeded rows, since nothing
+    /// is cycling there.
     pub cycle_time: Option<f64>,
     /// The growing environment this row's item needs ("Cool"/"Warm"/"Freeze"/"Scorching"/
     /// "Adequate"), if any; lets the frontend group Farmland/Woodland rows by which environment
@@ -661,6 +888,8 @@ pub struct PlanStep {
     /// On a producing processor row, how many of its `facility_count` units are busy on average
     /// (a unit waiting on ingredients frees its Aniimo for other work). `None` elsewhere.
     pub busy_units: Option<f64>,
+    /// When planning with the player's roster, which member works this row (see [`Crew`]).
+    pub crew: Option<usize>,
 }
 
 /// How many times a Farmland/Woodland plot needs to be (re-)planted with a fresh seed over the
@@ -943,6 +1172,8 @@ pub struct FacilityCounts {
     /// report every facility as maximally unlocked, and [`FacilityCounts::only`] uses `(0, 1)` so
     /// unlisted facilities aren't owned at all.
     default_tier: (u32, u32),
+    /// The Aniimo the player has, when planning with them (see [`Crew`]).
+    crew: Option<Crew>,
 }
 
 impl Default for FacilityCounts {
@@ -950,11 +1181,23 @@ impl Default for FacilityCounts {
         Self {
             facilities: std::collections::HashMap::new(),
             default_tier: (1, 1),
+            crew: None,
         }
     }
 }
 
 impl FacilityCounts {
+    /// Plans with the Aniimo in `crew` (see [`Crew`]), with items from [`crew_variants`].
+    pub fn set_crew(&mut self, crew: Crew) -> &mut Self {
+        self.crew = Some(crew);
+        self
+    }
+
+    /// The Aniimo the player has, if planning with them.
+    pub fn crew(&self) -> Option<&Crew> {
+        self.crew.as_ref()
+    }
+
     /// Creates an empty `FacilityCounts` (every facility defaults to count=1, level=1).
     pub fn new() -> Self {
         Self::default()
@@ -988,6 +1231,7 @@ impl FacilityCounts {
         let mut fc = Self {
             facilities: std::collections::HashMap::new(),
             default_tier: (0, 1),
+            crew: None,
         };
         for (name, count, level) in pairs {
             fc.set(name, *count, *level);
@@ -1001,6 +1245,7 @@ impl FacilityCounts {
         Self {
             facilities: std::collections::HashMap::new(),
             default_tier: (1, 99),
+            crew: None,
         }
     }
 

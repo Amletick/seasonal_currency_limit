@@ -19,12 +19,17 @@ Updated for the full release, with a joint LP-based facility-allocation engine f
 - **Proven Best Plans**: The web app solves the whole problem exactly (every recipe, whole plots and machines, and environment building layouts together) with the [HiGHS](https://highs.dev) solver, and proves each plan is the best possible for your facilities
 - **Joint Facility Allocation**: Solves for every item and every facility at once, so shared resources (e.g. two recipes both wanting the same Farmland soybean supply) are split correctly instead of double-counted
 - **Whole-Unit Realism**: Growers are rounded to whole plots and processors are dedicated to one recipe each, matching how the game actually works; only the Woodworking Bench and Chimney Kiln take turns between tiers, since each tier is made from the one below
-- **Level-Up Strategy**: Plans the soonest next RV level-up (coins plus Wood Blocks and Mineral Sand, or from RV 7 the Woodworking Bench and Chimney Kiln items it costs), counting what you already have, then earns as many coins as that pace allows; RV 2 to 20
-- **Priorities Strategy**: Rank what you want (coins, Aniimo EXP, Aniipods, Wood Blocks, Mineral Sand) and switch off what you don't; each one is maximized in turn, keeping what the ones above it reached, and coins take whatever is left
+- **Level-Up Strategy**: Plans the soonest next RV level-up (Home Coins plus Wood Blocks and Mineral Sand, or from RV 7 the Woodworking Bench and Chimney Kiln items it costs), counting what you already have, then earns as many Home Coins as that pace allows; RV 2 to 20
+- **Priorities Strategy**: Rank what you want (Home Coins, Aniimo EXP, Aniipods, Wood Blocks, Mineral Sand, and Harvest Moon Points during the festival) and switch off what you don't; each one is maximized in turn, keeping what the ones above it reached, and Home Coins take whatever is left
+- **Harvest Moon Festival**: From RV 10, plans can use the season's crops and recipes (Recipe Note ones once you tick them), count Harvest Moon Points on everything sold, and show the Moonray Wheat their seeds use; wheat is taken as unlimited
 - **Growing Environments**: Heat Furnace, Cooling Unit and Sunlamp layouts are planned with the plots, including a crop grown outside its environment at the slower rate, and a Heat Furnace and Cooling Unit placed so their areas overlap and add up to a third temperature between them
 - **Watering**: A plot is watered twice as it grows, each watering taking an eighth off its full-speed time
 - **Recipe Reference Page**: Every recipe in the game data, browsable by facility, independent of what you own
-- **Aniimo Recommendations**: Every plan is solved for the Best Aniimo (level 4, the top, with each facility's personality; level 3 if you say you haven't got level-4 ones) and the Minimum (the lowest ability level each recipe accepts), and lists the team it needs: each ability, level and personality, and how many it takes to keep up with the work (Farmland and Woodland jobs included), checked against how many Aniimo your RV level allows. An Aniimo carries four personalities at once, one from each opposed pair (I/E Instinctive-Energetic, N/S Nimble-Practical, F/T Faithful-Tenacious, P/J Playful-Judicious), so one can hold the bonus at several facilities as long as none of them want opposites and it has hours to spare. Times follow the game's Efficiency: 100% at the level a recipe needs (one workload a second at a processor, 1.25 or 1.5 on a gathering facility's level-2 or level-3 recipe); at a processor, 300% one level above, then +100% per level; at a gathering facility each level above adds half a workload a second, reading as +50% on a level-1 recipe, +40% on a level-2 one and +33% on a level-3 one; the personality bonus adds 20%
+- **Aniimo Recommendations**: Every plan is solved for the Best Aniimo (the level you have of each ability, with each facility's personality) and the Minimum (the lowest ability level each recipe accepts), and lists the team it needs: each ability, level and personality, and how many it takes to keep up with the work (Farmland and Woodland jobs included), checked against how many Aniimo your RV level allows. An Aniimo carries four personalities at once, one from each opposed pair (I/E Instinctive-Energetic, N/S Nimble-Practical, F/T Faithful-Tenacious, P/J Playful-Judicious), so one can hold the bonus at several facilities as long as none of them want opposites and it has hours to spare. Times follow the game's Efficiency: 100% at the level a recipe needs (one workload a second at a processor, 1.25 or 1.5 on a gathering facility's level-2 or level-3 recipe); at a processor, 300% one level above, then +100% per level; at a gathering facility each level above adds half a workload a second, reading as +50% on a level-1 recipe, +40% on a level-2 one and +33% on a level-3 one; the personality bonus adds 20%
+- **My Aniimo**: Plan with the Aniimo you actually have: list each kind with how many, its abilities and levels, and its personalities. Each works what its abilities allow for the hours it has, environment buildings and resident facilities take one Aniimo each, and the plan shows what every Aniimo does
+- **Opportunities**: After each plan, the changes within your reach (a recipe to unlock, a higher Aniimo level, and in Advanced mode a module or facility) are solved and ranked by how much they'd improve it
+- **Homeland Layout**: Places every facility within your open plots so the busiest are nearest the Storage Unit, keeping each environment building's plots in its coverage and other crops out of it
+- **Progress Card**: Shows each solve as it runs and whether it proved its answer the best
 - **Item Upgrade Modules**: Support for module-unlocked items (Ecological, Kitchen, Resource Detector, Crafting)
 
 **CLI / library**
@@ -622,6 +627,7 @@ Production data is stored in CSV files in the `data/` directory:
 - `pickling_jar.csv` - Sauces, vinegars and candied fruit
 - `joy_wheel_loom.csv` - Thread, yarn and fabric
 - `woodworking_bench.csv`, `chimney_kiln.csv` - RV level-up materials from Wood Blocks and Mineral Sand (no sale value)
+- `harvest_moon_festival.csv` - The Harvest Moon Festival's crops and recipes, with their seed cost in Moonray Wheat and Harvest Moon Points
 
 Farmland, Woodland, Mine, Well, Tidewhisper Sandcastle, Dewy House, Carousel Mill, Crafting Table, Claw Game Cooker, Jukebox Dryer, Simmering Pot, Phonolfactory Table, Bouncy Brew Keg, Joy Wheel Loom, Blazing Stove, Pickling Jar, Woodworking Bench and Chimney Kiln are verified in game. The other three facilities' recipes haven't been checked in game yet: `data/unverified.csv` lists them, the recipe list marks each one, and a plan lists any it relies on.
 
@@ -650,6 +656,8 @@ web/
   app.js             - Page logic, including the facility recipe reference modal
   style.css          - Styling
   worker.js          - Web Worker running the wasm module and HiGHS
+  layout.js          - Homeland layout: places facilities around the Storage Unit
+  layout-worker.js   - Web Worker running the layout
   vendor/highs/      - HiGHS solver compiled to WebAssembly (MIT license)
   pkg/               - Built WASM module (generated)
 tests/

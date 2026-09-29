@@ -173,6 +173,14 @@ fn format_time(seconds: f64) -> String {
 
 /// Get embedded production data.
 /// This embeds the CSV data directly into the WASM binary.
+/// The Harvest Moon Festival's recipes, watered like everything else.
+fn embedded_season_items() -> Vec<ProductionItem> {
+    let mut season = crate::data::parse_season(include_str!("../data/harvest_moon_festival.csv"))
+        .expect("embedded harvest_moon_festival.csv is valid");
+    crate::models::apply_watering(&mut season);
+    season
+}
+
 fn get_embedded_items() -> Vec<ProductionItem> {
     use csv::ReaderBuilder;
 
@@ -232,6 +240,8 @@ fn get_embedded_items() -> Vec<ProductionItem> {
             workload: None,
             byproduct: None,
             environment: row.environment,
+            season: None,
+            crew: None,
         });
     }
 
@@ -262,6 +272,8 @@ fn get_embedded_items() -> Vec<ProductionItem> {
                 .byproduct_yield
                 .map(|amt| ("Wood Blocks".to_string(), amt)),
             environment: row.environment,
+            season: None,
+            crew: None,
         });
     }
 
@@ -289,6 +301,8 @@ fn get_embedded_items() -> Vec<ProductionItem> {
                 .byproduct_yield
                 .map(|amt| ("Mineral Sand".to_string(), amt)),
             environment: row.environment,
+            season: None,
+            crew: None,
         });
     }
 
@@ -321,6 +335,8 @@ fn get_embedded_items() -> Vec<ProductionItem> {
                 workload: Some(row.workload),
                 byproduct: None,
                 environment: row.environment,
+                season: None,
+                crew: None,
             });
         }
     }
@@ -357,6 +373,8 @@ fn get_embedded_items() -> Vec<ProductionItem> {
             workload: row.workload,
             byproduct: None,
             environment: None,
+            season: None,
+            crew: None,
         });
     }
 
@@ -392,6 +410,8 @@ fn get_embedded_items() -> Vec<ProductionItem> {
             workload: row.workload,
             byproduct: None,
             environment: None,
+            season: None,
+            crew: None,
         });
     }
 
@@ -427,6 +447,8 @@ fn get_embedded_items() -> Vec<ProductionItem> {
             workload: row.workload,
             byproduct: None,
             environment: None,
+            season: None,
+            crew: None,
         });
     }
 
@@ -474,6 +496,8 @@ fn get_embedded_items() -> Vec<ProductionItem> {
                 workload: row.workload,
                 byproduct: None,
                 environment: None,
+                season: None,
+                crew: None,
             });
         }
     }
@@ -690,10 +714,22 @@ pub struct JsPlanInput {
     /// Aniimo without the personality bonus. Ignored when `aniimo` is set.
     #[serde(default)]
     pub workers: std::collections::HashMap<String, JsWorker>,
-    /// `"minimum"` or `"best"`: plan for that [`crate::models::AniimoSetup`] instead of
-    /// `workers`, and report which Aniimo each row needs (see [`JsPlanStep::aniimo`]).
+    /// `"minimum"`, `"best"` or `"custom"`: plan for that [`crate::models::AniimoSetup`] and
+    /// report which Aniimo each row needs (see [`JsPlanStep::aniimo`]). `"custom"` takes the
+    /// Aniimo from `workers`, facility by facility. `"roster"` plans with the Aniimo in `roster`
+    /// instead (see [`crate::models::Crew`]).
     #[serde(default)]
     pub aniimo: Option<String>,
+    /// The Aniimo the player has, for `"roster"`.
+    #[serde(default)]
+    pub roster: Option<JsRoster>,
+    /// With `"best"`, the ability level the player has of each ability, e.g. `{"Earth": 4,
+    /// "Leisure": 3}`. Aniimo level up by ability, so a player can have a level-4 one for the
+    /// Mine and only a level-3 one for the Starfall Hammock. Anything left out falls back to
+    /// [`crate::models::MAX_ANIIMO_LEVEL`], and the game's own ceiling applies either way (see
+    /// [`crate::models::max_level_for`]).
+    #[serde(default)]
+    pub aniimo_levels: std::collections::HashMap<String, u32>,
     /// See `crate::optimizer::find_production_plan`'s doc comment on `prioritize_byproducts`;
     /// defaults to `true` (checked by default in the UI) since Wood Blocks/Mineral Sand can be a
     /// real in-game constraint players can't just buy their way around.
@@ -711,6 +747,55 @@ pub struct JsPlanInput {
     /// before it allow.
     #[serde(default)]
     pub priorities: Vec<String>,
+    /// Whether plans may use the Harvest Moon Festival's recipes. Its points are the priority
+    /// `"season_points"` (see [`crate::models::SEASON_POINTS`]).
+    #[serde(default)]
+    pub season: bool,
+}
+
+/// The player's Aniimo, and what the page knows of the facilities they work (see
+/// [`crate::models::Crew`]).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct JsRoster {
+    pub members: Vec<JsRosterAniimo>,
+    /// Facilities whose Aniimo lives there, e.g. the Tidewhisper Sandcastle.
+    #[serde(default)]
+    pub residents: Vec<String>,
+    /// The ability each environment building needs of its Aniimo, e.g. `{"Heat Furnace": "Fire"}`.
+    #[serde(default)]
+    pub environment: std::collections::BTreeMap<String, String>,
+    /// The personality each facility rewards, e.g. `{"Mine": "Playful"}`.
+    #[serde(default)]
+    pub personalities: std::collections::BTreeMap<String, String>,
+}
+
+/// One kind of Aniimo on the roster: `{"count": 2, "abilities": {"Fire": 3, "Hauling": 3},
+/// "personalities": ["Energetic", "Nimble", "Faithful", "Playful"]}`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct JsRosterAniimo {
+    pub count: u32,
+    pub abilities: std::collections::BTreeMap<String, u32>,
+    #[serde(default)]
+    pub personalities: Vec<String>,
+}
+
+impl JsRoster {
+    fn crew(&self) -> crate::models::Crew {
+        crate::models::Crew {
+            members: self
+                .members
+                .iter()
+                .map(|m| crate::models::RosterAniimo {
+                    count: m.count,
+                    abilities: m.abilities.clone(),
+                    personalities: m.personalities.clone(),
+                })
+                .collect(),
+            residents: self.residents.iter().cloned().collect(),
+            environment: self.environment.clone(),
+            personalities: self.personalities.clone(),
+        }
+    }
 }
 
 impl JsPlanInput {
@@ -754,6 +839,10 @@ pub struct JsPlanStep {
     /// empty when the plan wasn't made for a setup or the row produces nothing.
     #[serde(default)]
     pub aniimo_tasks: Vec<JsAniimoTask>,
+    /// When planning with the player's roster, which member works this row (an index into the
+    /// roster sent in [`JsPlanInput::roster`]).
+    #[serde(default)]
+    pub crew: Option<usize>,
 }
 
 /// Aniimo work a plan row creates for one ability: how many Aniimo of that ability and level it
@@ -795,7 +884,7 @@ fn embedded_grower_steps() -> crate::models::GrowerSteps {
 /// accept any level, so they're counted at their minimum level under either setup.
 fn aniimo_tasks_for(
     step: &crate::models::PlanStep,
-    setup: crate::models::AniimoSetup,
+    setup: &crate::models::AniimoSetup,
     requirements: &crate::models::AniimoRequirements,
     grower_steps: &crate::models::GrowerSteps,
 ) -> Vec<JsAniimoTask> {
@@ -859,12 +948,25 @@ fn embedded_aniimo_requirements() -> crate::models::AniimoRequirements {
         .expect("embedded aniimo_requirements.csv is valid")
 }
 
-fn aniimo_setup_from(name: &str) -> Option<crate::models::AniimoSetup> {
+fn aniimo_setup_from(
+    name: &str,
+    levels: &std::collections::HashMap<String, u32>,
+    workers: &std::collections::HashMap<String, JsWorker>,
+) -> Option<crate::models::AniimoSetup> {
+    // The web app tacks the abilities it is planning below level 4 onto the name, so each Best
+    // gets worked out and kept apart; the levels themselves arrive in `aniimo_levels`.
+    let name = name.split(':').next().unwrap_or(name);
     match name {
         "minimum" => Some(crate::models::AniimoSetup::Minimum),
-        // "best" plans for the top ability level; "best3" for a player without level-4 Aniimo.
-        "best" => Some(crate::models::AniimoSetup::Best(crate::models::MAX_ANIIMO_LEVEL)),
-        "best3" => Some(crate::models::AniimoSetup::Best(3)),
+        "custom" => Some(crate::models::AniimoSetup::PerFacility(workers_from(workers))),
+        // "best" plans for the levels the player says they have, the top level where they
+        // haven't said; "best3" holds everything to level 3.
+        "best" | "best3" => {
+            let default = if name == "best3" { 3 } else { crate::models::MAX_ANIIMO_LEVEL };
+            let mut wanted = crate::models::AniimoLevels::all(default);
+            wanted.by_ability = levels.iter().map(|(a, l)| (a.clone(), *l)).collect();
+            Some(crate::models::AniimoSetup::Best(wanted))
+        }
         _ => None,
     }
 }
@@ -901,6 +1003,7 @@ impl From<crate::models::PlanStep> for JsPlanStep {
             aniimo: None,
             busy_units: s.busy_units,
             aniimo_tasks: Vec::new(),
+            crew: s.crew,
         }
     }
 }
@@ -917,6 +1020,7 @@ impl From<JsPlanStep> for crate::models::PlanStep {
             cycle_time: s.cycle_time,
             environment: s.environment,
             busy_units: s.busy_units,
+            crew: s.crew,
         }
     }
 }
@@ -934,6 +1038,9 @@ pub struct JsPlanProduct {
     pub lead_time_seconds: f64,
     pub total_units: f64,
     pub total_value: f64,
+    /// Season points per unit sold (see [`crate::models::SeasonTerms::points`]); 0 outside a season.
+    #[serde(default)]
+    pub points: f64,
 }
 
 impl From<crate::models::PlanProduct> for JsPlanProduct {
@@ -947,6 +1054,7 @@ impl From<crate::models::PlanProduct> for JsPlanProduct {
             lead_time_seconds: p.lead_time,
             total_units: p.total_units,
             total_value: p.total_value,
+            points: 0.0,
         }
     }
 }
@@ -1100,17 +1208,28 @@ pub struct JsProductionPlan {
     /// What the plan makes of each priority it was asked for, in order.
     #[serde(default)]
     pub priorities: Vec<JsPriority>,
+    /// During the season, its points per second from everything the plan sells.
+    #[serde(default)]
+    pub season_points: Option<f64>,
+    /// With the player's roster, `[building, member, share of its day]` for each environment
+    /// building kind a member staffs.
+    #[serde(default)]
+    pub staffing: Vec<(String, usize, f64)>,
 }
 
 /// What a plan makes of one priority.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JsPriority {
-    /// "coins", "aniimo_exp", "aniipods", "Wood Blocks" or "Mineral Sand".
+    /// "coins", "aniimo_exp", "aniipods", "Wood Blocks", "Mineral Sand" or "season_points".
     pub target: String,
     pub per_second: f64,
     /// For a currency other than coins, the items that make it and how many of each per second,
     /// e.g. `[["growth_flower", 0.00093]]` behind Aniimo EXP.
     pub items: Vec<(String, f64)>,
+    /// `[per second, seconds until the first batch]` for everything making it (see
+    /// [`crate::exact::target_streams`]), so a goal counts each one's wait; empty for coins.
+    #[serde(default)]
+    pub streams: Vec<(f64, f64)>,
 }
 
 /// How long a level-up plan takes to cover the level-up's cost.
@@ -1156,6 +1275,8 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         unverified: vec![],
         level_up: None,
         priorities: vec![],
+        season_points: None,
+        staffing: Vec::new(),
     }
 }
 
@@ -1219,7 +1340,7 @@ pub fn find_plan(input_json: &str, on_progress: Option<js_sys::Function>) -> Str
 }
 
 /// With "prioritize byproducts" on, the exact planner first finds the most of each byproduct the
-/// facilities can make: one model per byproduct, `[{"resource", "lp", "variables"}]` (see
+/// facilities can make: one model per byproduct, `[{"resource", "lp", "variables", "tiebreak"}]` (see
 /// [`exact_problem`] for the format). The caller solves each and passes
 /// `[[resource, most per second], ...]` to [`exact_problem`] and [`exact_plan`] as the floors.
 /// Empty when byproducts aren't prioritized.
@@ -1232,14 +1353,14 @@ pub fn exact_byproduct_problems(input_json: &str) -> String {
     let problems: Vec<serde_json::Value> = crate::exact::byproducts(&prepared.items)
         .iter()
         .map(|resource| {
-            let (lp, variables) = crate::exact::write_lp(
+            let problem = crate::exact::write_lp(
                 &prepared.items,
                 &prepared.input.currency,
                 &prepared.facility_counts,
                 &prepared.module_levels,
                 crate::exact::Goal::MostOf(resource),
             );
-            serde_json::json!({ "resource": resource, "lp": lp, "variables": variables })
+            serde_json::json!({ "resource": resource, "lp": problem.lp, "variables": problem.variables, "tiebreak": problem.tiebreak })
         })
         .collect();
     serde_json::Value::Array(problems).to_string()
@@ -1247,7 +1368,7 @@ pub fn exact_byproduct_problems(input_json: &str) -> String {
 
 /// The model for the most of one priority `target` (see [`JsPlanInput::priorities`]) this
 /// homeland can make while keeping every floor in `stage_json` (the priorities before it):
-/// `{"lp", "variables"}` as in [`exact_problem`]. The caller solves it and adds
+/// `{"lp", "variables", "tiebreak"}` as in [`exact_problem`]. The caller solves it and adds
 /// `[target, per second]` to the floors for the next priority and the final coin solve.
 #[wasm_bindgen]
 pub fn exact_priority_problem(input_json: &str, stage_json: &str, target: &str) -> String {
@@ -1260,13 +1381,13 @@ pub fn exact_priority_problem(input_json: &str, stage_json: &str, target: &str) 
             &prepared.module_levels,
             crate::exact::Goal::Earn { floors: &stage.floors },
         ),
-        Err(_) => (String::new(), 0),
+        Err(_) => Default::default(),
     };
-    serde_json::json!({ "lp": lp.0, "variables": lp.1 }).to_string()
+    lp_json(&lp)
 }
 
 /// For the level-up strategy, the model for the soonest level-up (see
-/// [`crate::exact::Goal::LevelUp`]): `{"lp", "variables"}` as in [`exact_problem`]. The caller
+/// [`crate::exact::Goal::LevelUp`]): `{"lp", "variables", "tiebreak"}` as in [`exact_problem`]. The caller
 /// solves it and passes the pace it finds (its objective) to [`exact_problem`] and [`exact_plan`].
 /// `lp` is empty for the coins strategy, or when the stock already covers the level-up.
 #[wasm_bindgen]
@@ -1280,11 +1401,11 @@ pub fn exact_level_up_problem(input_json: &str) -> String {
                 &prepared.module_levels,
                 crate::exact::Goal::LevelUp(level_up),
             ),
-            _ => (String::new(), 0),
+            _ => Default::default(),
         },
-        Err(_) => (String::new(), 0),
+        Err(_) => Default::default(),
     };
-    serde_json::json!({ "lp": lp.0, "variables": lp.1 }).to_string()
+    lp_json(&lp)
 }
 
 /// What the earlier solves settled, for [`exact_problem`] and [`exact_plan`].
@@ -1314,8 +1435,10 @@ impl JsStage {
 }
 
 /// The exact planner's model for this input (see [`crate::exact`]), for the caller to solve with
-/// HiGHS and hand back to [`exact_plan`]: `{"lp": <CPLEX LP text>, "variables": <count>}`, where
-/// the variables are `x0` up to `x<count - 1>`. `stage_json` is `{"floors": [[byproduct, per
+/// HiGHS and hand back to [`exact_plan`]: `{"lp": <CPLEX LP text>, "variables": <count>,
+/// "tiebreak": [[variable, weight], ...]}`, where the variables are `x0` up to `x<count - 1>` and
+/// the tie-break is added back to the solver's objective to get what it really made (see
+/// [`crate::exact::LpProblem`]). `stage_json` is `{"floors": [[byproduct, per
 /// second], ...], "pace": <level-ups per day>}` from the earlier solves (see
 /// [`exact_byproduct_problems`] and [`exact_level_up_problem`]); either can be left out. `lp` is
 /// empty when the exact planner doesn't cover the input (a byproduct as the currency), so the
@@ -1331,9 +1454,14 @@ pub fn exact_problem(input_json: &str, stage_json: &str) -> String {
             &prepared.module_levels,
             stage.goal(&prepared.input),
         ),
-        _ => (String::new(), 0),
+        _ => Default::default(),
     };
-    serde_json::json!({ "lp": lp.0, "variables": lp.1 }).to_string()
+    lp_json(&lp)
+}
+
+/// `{"lp", "variables", "tiebreak"}` for a model (see [`crate::exact::LpProblem`]).
+fn lp_json(problem: &crate::exact::LpProblem) -> String {
+    serde_json::json!({ "lp": problem.lp, "variables": problem.variables, "tiebreak": problem.tiebreak }).to_string()
 }
 
 /// The solver's answer to [`exact_problem`]'s model.
@@ -1391,6 +1519,10 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     let plan = crate::exact::to_production_plan(&exact, &prepared.items, &currency, &prepared.facility_counts);
     let mut js = prepared.to_js(plan, Some(proof));
     js.level_up = report;
+    js.staffing = exact.staffing.clone();
+    if prepared.input.season {
+        js.season_points = Some(crate::exact::target_rate(&exact, &prepared.items, crate::models::SEASON_POINTS));
+    }
     js.priorities = prepared
         .input
         .priorities
@@ -1399,6 +1531,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
             target: target.clone(),
             per_second: crate::exact::target_rate(&exact, &prepared.items, target),
             items: crate::exact::target_items(&exact, &prepared.items, target),
+            streams: crate::exact::target_streams(&exact, &prepared.items, target),
         })
         .collect();
     serde_json::to_string(&js).unwrap_or_default()
@@ -1465,6 +1598,8 @@ struct PreparedInput {
     module_levels: ModuleLevels,
     items: Vec<ProductionItem>,
     setup: Option<crate::models::AniimoSetup>,
+    /// The player's own Aniimo, when planning with them.
+    crew: Option<crate::models::Crew>,
     requirements: crate::models::AniimoRequirements,
     grower_steps: crate::models::GrowerSteps,
 }
@@ -1483,14 +1618,30 @@ impl PreparedInput {
             crafting_module: input.modules.crafting_module,
         };
         let mut items = get_embedded_items();
-        items.retain(|item| !input.exclude.iter().any(|name| name == crate::models::base_item_name(&item.name)));
-        let setup = input.aniimo.as_deref().and_then(aniimo_setup_from);
-        let requirements = embedded_aniimo_requirements();
-        match setup {
-            Some(setup) => requirements.apply(setup, &mut items),
-            None => workers_from(&input.workers).apply(&requirements, &mut items),
+        if input.season {
+            items.extend(embedded_season_items());
         }
-        Ok(PreparedInput { input, facility_counts, module_levels, items, setup, requirements, grower_steps: embedded_grower_steps() })
+        items.retain(|item| !input.exclude.iter().any(|name| name == crate::models::base_item_name(&item.name)));
+        let setup = input
+            .aniimo
+            .as_deref()
+            .and_then(|name| aniimo_setup_from(name, &input.aniimo_levels, &input.workers));
+        let requirements = embedded_aniimo_requirements();
+        let grower_steps = embedded_grower_steps();
+        let mut facility_counts = facility_counts;
+        let crew = match (input.aniimo.as_deref(), &input.roster) {
+            (Some(name), Some(roster)) if name.starts_with("roster") => Some(roster.crew()),
+            _ => None,
+        };
+        match (&crew, &setup) {
+            (Some(crew), _) => {
+                items = crate::models::crew_variants(items, crew, &requirements, &grower_steps);
+                facility_counts.set_crew(crew.clone());
+            }
+            (None, Some(setup)) => requirements.apply(setup, &mut items),
+            (None, None) => workers_from(&input.workers).apply(&requirements, &mut items),
+        }
+        Ok(PreparedInput { input, facility_counts, module_levels, items, setup, crew, requirements, grower_steps })
     }
 
     /// The result the web page shows for `plan`, with each row's Aniimo; `proof` is the exact
@@ -1515,7 +1666,17 @@ impl PreparedInput {
             .coin_items
             .into_iter()
             .map(|step| {
-                let aniimo = match (self.setup, &step.item_name) {
+                // With the player's roster, the row names the member working it.
+                let from_crew = match (&self.crew, step.crew, &step.item_name) {
+                    (Some(crew), Some(member), Some(item)) => crew.members.get(member).and_then(|aniimo| {
+                        let (ability, _) = self.requirements.get(item)?;
+                        let bonus = crate::models::has_personality_bonus(&step.facility)
+                            && crew.personalities.get(&step.facility).is_some_and(|p| aniimo.personalities.contains(p));
+                        Some(JsAniimo { ability: ability.to_string(), level: aniimo.level(ability), personality_bonus: bonus })
+                    }),
+                    _ => None,
+                };
+                let aniimo = from_crew.or_else(|| match (&self.setup, &step.item_name) {
                     (Some(setup), Some(item)) if step.status == crate::models::PlanStepStatus::Producing => {
                         self.requirements.get(item).map(|(ability, _)| {
                             let worker = self.requirements.worker_for_at(item, &step.facility, setup);
@@ -1527,21 +1688,32 @@ impl PreparedInput {
                         })
                     }
                     _ => None,
-                };
+                });
                 let aniimo_tasks = self
                     .setup
+                    .as_ref()
                     .map(|setup| aniimo_tasks_for(&step, setup, &self.requirements, &self.grower_steps))
                     .unwrap_or_default();
                 JsPlanStep { aniimo, aniimo_tasks, ..step.into() }
             })
             .collect();
+        let income_streams: Vec<JsPlanProduct> = plan
+            .income_streams
+            .into_iter()
+            .map(|stream| {
+                let points = self.items.iter().find(|i| i.name == stream.item_name).and_then(|i| i.season).map_or(0.0, |s| s.points);
+                JsPlanProduct { points, ..stream.into() }
+            })
+            .collect();
+        // The exact planner sets its own (see `exact_plan`); this is for the backup planner's.
+        let season_points = self.input.season.then(|| income_streams.iter().map(|s| s.units_per_second * s.points).sum());
         JsProductionPlan {
             success: true,
             error: None,
             currency: plan.currency,
             rate_per_second: plan.rate_per_second,
             coin_items,
-            income_streams: plan.income_streams.into_iter().map(Into::into).collect(),
+            income_streams,
             byproduct_rates: plan.byproduct_rates,
             environment_assignments: plan.environment_assignments.into_iter().map(Into::into).collect(),
             candidates_evaluated: plan.candidates_evaluated,
@@ -1551,6 +1723,8 @@ impl PreparedInput {
             unverified,
             level_up: None,
             priorities: vec![],
+            season_points,
+            staffing: Vec::new(),
         }
     }
 }
@@ -1744,13 +1918,23 @@ struct RecipeInfo {
     verified: bool,
     /// For crops and trees, each Aniimo job in growing order: `(step, ability, min level)`.
     jobs: Vec<(String, String, u32)>,
+    /// The growing environment a crop or tree needs, if any.
+    environment: Option<String>,
+    /// The item its byproduct is used as in other recipes, e.g. `mineral_sand` for Mineral Sand
+    /// (see [`crate::models::BYPRODUCT_ITEMS`]).
+    byproduct_item: Option<String>,
+    /// Whether it's a season recipe (see [`crate::models::SeasonTerms`]).
+    season: bool,
+    /// For a season crop, the season currency its seeds cost a batch.
+    season_seed_cost: Option<f64>,
 }
 
 /// Get the full recipe list for every item in the game data, grouped by nothing in particular
 /// (the caller groups by facility); used by the facilities reference page.
 #[wasm_bindgen]
 pub fn get_all_items() -> String {
-    let items = get_embedded_items();
+    let mut items = get_embedded_items();
+    items.extend(embedded_season_items());
     let requirements = embedded_aniimo_requirements();
     let unverified = embedded_unverified();
     let grower_steps = embedded_grower_steps();
@@ -1774,6 +1958,10 @@ pub fn get_all_items() -> String {
             aniimo: requirements.get(&item.name).map(|(ability, level)| (ability.to_string(), level)),
             verified: !unverified.iter().any(|(name, facility)| *name == item.name && *facility == item.facility),
             jobs: grower_steps.get(&item.name).iter().map(|s| (s.step.clone(), s.ability.clone(), s.min_level)).collect(),
+            environment: item.environment.clone(),
+            byproduct_item: item.byproduct.as_ref().and_then(|(resource, _)| crate::models::byproduct_item(resource)).map(str::to_string),
+            season: item.season.is_some(),
+            season_seed_cost: item.season.map(|s| s.seed_cost).filter(|&cost| cost > 0.0),
         })
         .collect();
 

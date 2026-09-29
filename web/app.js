@@ -1,9 +1,9 @@
 // Aniimax Web Application
 
 import {
-    FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME,
+    FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
     MAX_HOME_LEVEL, ANIIMO_MAX, simpleSetup,
-    LEVEL_UP_COSTS, LEVEL_UP_CHAINS, SPECIAL_RECIPES, ANIIPOD_TIERS, personalityLetter, opposedPersonality,
+    LEVEL_UP_COSTS, LEVEL_UP_CHAINS, SPECIAL_RECIPES, SEASON, ANIIPOD_TIERS, PERSONALITY_PAIRS, personalityLetter, opposedPersonality,
 } from './facility-config.js';
 
 let wasmReady = false;
@@ -42,6 +42,8 @@ function initWorker() {
     };
     worker.onerror = (event) => {
         console.error('Worker error:', event.message || event);
+        pendingWorkerRequests.forEach(pending => pending.reject(new Error(event.message || 'The planner stopped')));
+        pendingWorkerRequests.clear();
     };
 }
 
@@ -55,11 +57,10 @@ function restartWorker() {
 }
 
 // Sends one request to the worker and resolves with its result (or rejects with its error);
-// `type` matches a key in worker.js's `HANDLERS` (or `'find_plan'`, handled specially there),
-// `payload` is that function's own single string argument (omit for `get_version`/
-// `get_all_items`, which take none). `onProgress(count)`, if given, is called for every
-// intermediate progress message the request receives before its final result (currently only
-// `find_plan` sends any); see worker.js.
+// `type` is one of worker.js's `HANDLER_NAMES` or `'find_plan'`, and `payload` that function's
+// own single string argument (omit for `get_version`/`get_all_items`, which take none).
+// `onProgress(count)`, if given, gets each progress message before the result: `find_plan`
+// sends every solve step and, from the backup planner, its trial count; see worker.js.
 function callWorker(type, payload, onProgress) {
     return new Promise((resolve, reject) => {
         const id = ++nextRequestId;
@@ -115,9 +116,17 @@ let lastPlan = null;
 let plansBySetup = {};
 let planRunId = 0;
 
+// A name for the setup on screen, spelling out what was said so each distinct one is worked out
+// and kept apart; the levels themselves travel in `aniimo_levels`, the roster in `roster`.
 function selectedAniimoSetup() {
-    if (document.getElementById('aniimo-minimum').checked) return 'minimum';
-    return bestAniimoLevel() === MAX_ANIIMO_LEVEL ? 'best' : 'best3';
+    const tab = selectedSetupTab();
+    if (tab === 'minimum') return 'minimum';
+    if (tab === 'custom') return `roster:${JSON.stringify(roster.map(({ name, ...aniimo }) => aniimo))}`;
+    return bestAniimoSetup();
+}
+
+function bestAniimoSetup() {
+    return `best:${levelledAbilities().map(a => `${a}${bestAniimoLevel(a)}`).join(',')}`;
 }
 
 // What the last plan was solved from, so switching setup can work out another one without the
@@ -125,38 +134,66 @@ function selectedAniimoSetup() {
 let lastPlanInput = null;
 
 // Solves for `setup` if it isn't already worked out, and shows it when it lands if that's still
-// what's selected. A run id guards against a newer Find the best plan click.
+// what's selected. It runs in a worker of its own, which a newer pick stops, so quick roster
+// edits don't queue a solve each. A run id guards against a newer Find the best plan click.
+let setupSolve = null;
 function ensurePlanFor(setup) {
-    if (plansBySetup[setup] || !lastPlanInput) return;
+    if (plansBySetup[setup] || !lastPlanInput || setupSolve?.setup === setup) return;
+    stopSetupSolve();
     const runId = planRunId;
-    callWorker('find_plan', JSON.stringify({ ...lastPlanInput, aniimo: setup }))
-        .then(json => {
-            if (runId !== planRunId) return;
-            plansBySetup[setup] = JSON.parse(json);
-            if (selectedAniimoSetup() === setup) showSelectedPlan(false);
-        })
-        .catch(error => console.warn('Could not work out the', setup, 'setup:', error));
+    const solver = new Worker(WORKER_URL, { type: 'module' });
+    setupSolve = { setup, worker: solver };
+    const done = (plan) => {
+        solver.terminate();
+        if (setupSolve?.worker === solver) setupSolve = null;
+        if (runId !== planRunId) return;
+        plansBySetup[setup] = plan;
+        if (selectedAniimoSetup() === setup) showSelectedPlan();
+    };
+    solver.onmessage = (event) => {
+        const { type, ok, result, error } = event.data;
+        if (type === 'progress') return;
+        done(ok ? JSON.parse(result) : { success: false, error });
+    };
+    solver.onerror = (event) => done({ success: false, error: event.message || 'The planner stopped' });
+    // The levels are read afresh: the player may have changed which abilities they have since
+    // the plan this input came from.
+    solver.postMessage({ id: 1, type: 'find_plan', payload: JSON.stringify({ ...lastPlanInput, ...aniimoInput(setup) }) });
+}
+
+function stopSetupSolve() {
+    setupSolve?.worker.terminate();
+    setupSolve = null;
 }
 
 // Shows the selected setup, and works it out first if this is the first time it's been asked for.
 function switchAniimoSetup() {
-    showSelectedPlan(false);
+    showSelectedPlan();
     ensurePlanFor(selectedAniimoSetup());
 }
 
 // Shows the plan for the selected Aniimo setup, or a "still working" note if it isn't ready.
-function showSelectedPlan(scroll) {
+function showSelectedPlan() {
     const setup = selectedAniimoSetup();
     const plan = plansBySetup[setup];
     const pending = document.getElementById('aniimo-pending');
+    const content = document.getElementById('results-content');
+    content.classList.toggle('stale', !plan);
     if (!plan) {
         pending.style.display = 'block';
         return;
     }
     pending.style.display = 'none';
     lastPlan = plan;
-    displayPlan(plan, scroll);
-    if (plan.success) runTimeToGoal();
+    displayPlan(plan);
+    if (plan.success) {
+        runTimeToGoal();
+        rankImprovementsFor(setup);
+    } else {
+        stopRanking();
+        ranking = null;
+        renderImprovements();
+    }
 }
 
 // The most recently computed goal result, held the same way as `lastPlan` so switching the rate
@@ -166,7 +203,7 @@ let lastGoalResult = null;
 // Display name for each optimizable currency. Coins are the only one since the full release
 // removed Bud Tickets; kept as a map so a plan's `currency` still resolves to its label.
 const CURRENCY_LABELS = {
-    coins: 'Coins',
+    coins: 'Home Coins',
     aniimo_exp: 'Aniimo EXP',
     aniipods: 'Aniipods',
 };
@@ -323,7 +360,7 @@ function getPersistedFieldIds() {
         'mode-simple', 'mode-advanced', 'home-level',
         'ecological-module-level', 'kitchen-module-level',
         'resource-detector-level', 'crafting-module-level',
-        'rate-unit', 'has-level-four'
+        'rate-unit', 'season-on', 'layout-sim-on'
     ];
 }
 
@@ -378,7 +415,7 @@ function initFacilityTiers(data) {
 }
 
 function saveInputsToStorage() {
-    const data = { facilityTiers, levelUpStock, skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder };
+    const data = { facilityTiers, levelUpStock, skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder, aniimoLevels, roster };
     getPersistedFieldIds().forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
@@ -407,6 +444,23 @@ function loadInputsFromStorage(data) {
             .map(target => ({ target, on: target === first }));
         data['strategy-priorities'] = true;
     }
+    if (data.aniimoLevels && typeof data.aniimoLevels === 'object') {
+        aniimoLevels = Object.fromEntries(Object.entries(data.aniimoLevels)
+            .filter(([ability, level]) => ABILITY_BY_NAME.has(ability) && Number.isInteger(Number(level)) && level >= 1 && level <= 4)
+            .map(([ability, level]) => [ability, Number(level)]));
+    }
+    if (Array.isArray(data.roster)) {
+        roster = data.roster
+            .filter(a => a && typeof a === 'object' && a.abilities && typeof a.abilities === 'object')
+            .map(a => ({
+                name: typeof a.name === 'string' ? a.name : '',
+                count: Math.max(1, Math.round(Number(a.count)) || 1),
+                abilities: Object.fromEntries(Object.entries(a.abilities)
+                    .filter(([ability, level]) => ABILITY_BY_NAME.has(ability) && Number.isInteger(Number(level)) && level >= 1 && level <= 4)
+                    .map(([ability, level]) => [ability, Number(level)])),
+                personalities: PERSONALITY_PAIRS.map((pair, p) => pair.names.includes(a.personalities?.[p]) ? a.personalities[p] : pair.names[0]),
+            }));
+    }
     getPersistedFieldIds().forEach(id => {
         if (!(id in data)) return;
         const el = document.getElementById(id);
@@ -417,6 +471,7 @@ function loadInputsFromStorage(data) {
             el.value = data[id];
         }
     });
+    levelUpTargetChosen = 'level-up-target' in data;
 }
 
 // Auto-save on every change to a persisted static field (facility tier inputs save themselves;
@@ -508,8 +563,18 @@ function renderSimpleSummary() {
         <div class="chip-grid">${moduleChips}</div>`;
 }
 
+// Whether the player has picked Advanced mode's level-up target; until then it follows the RV
+// level the facilities came from.
+let levelUpTargetChosen = false;
+
+function followLevelUpTarget(homeLevel) {
+    const select = document.getElementById('level-up-target');
+    if ([...select.options].some(o => o.value === String(homeLevel + 1))) select.value = String(homeLevel + 1);
+}
+
 function applyConfigMode() {
     const simple = isSimpleMode();
+    if (!simple && !levelUpTargetChosen) followLevelUpTarget(selectedHomeLevel());
     document.getElementById('simple-config').style.display = simple ? 'block' : 'none';
     document.getElementById('advanced-config').style.display = simple ? 'none' : 'block';
     if (simple) renderSimpleSummary();
@@ -527,6 +592,8 @@ function fillAdvancedFrom(homeLevel) {
     document.getElementById('kitchen-module-level').value = modules.kitchen_module;
     document.getElementById('resource-detector-level').value = modules.resource_detector;
     document.getElementById('crafting-module-level').value = modules.crafting_module;
+    followLevelUpTarget(homeLevel);
+    renderStrategy();
     saveInputsToStorage();
 }
 
@@ -567,9 +634,1281 @@ function attachSpecialHandlers() {
     });
 }
 
+// --- Opportunities ---------------------------------------------------------------------
+// After each plan, what the player could change to do better, best first: a locked recipe, an
+// Aniimo a level higher, and in Advanced mode a module level or one more facility or facility
+// level. Only changes within reach: Simple mode already has everything its RV level allows, and
+// Advanced mode goes up to the lowest RV level that allows everything entered. Each change is
+// solved in full in a worker of its own (see `rankImprovements` in worker.js), so planning never
+// waits on it, and it's measured by what the plan leads with (see `rankMeasure`).
+
+let rankWorkers = [];
+let rankRunId = 0;
+// Finished rankings by Aniimo setup, for the plan they were worked out from.
+let rankingsBySetup = {};
+// The ranking on screen: `{ setup, measure, homeLevel, candidates, base, results, done }`.
+let ranking = null;
+
+const MODULE_NAMES = {
+    ecological_module: 'Ecological Module',
+    kitchen_module: 'Kitchen Module',
+    resource_detector: 'Resource Detector',
+    crafting_module: 'Crafting Module',
+};
+
+function stopRanking() {
+    rankRunId++;
+    rankWorkers.forEach(worker => worker.terminate());
+    rankWorkers = [];
+}
+
+// How many workers share the ranking: up to six, leaving cores for the page, the plan's own worker
+// and the layout's.
+const RANK_WORKERS = Math.max(1, Math.min(6, (navigator.hardwareConcurrency || 2) - 3));
+
+// What a change is measured by: level-up time for a level-up plan that can be worked toward,
+// else the first ranked priority, else Home Coins.
+function rankMeasure() {
+    if (planContext?.levelUp && !planContext.unavailable && !planContext.ready) return 'level_up';
+    return (lastPlanInput?.priorities || [])[0] || 'coins';
+}
+
+// How many of a facility `tiers` hold, and the highest level among them.
+const tierCount = tiers => (tiers || []).reduce((sum, t) => sum + t.count, 0);
+const tierLevel = tiers => Math.max(0, ...(tiers || []).filter(t => t.count > 0).map(t => t.level));
+
+// The lowest RV level whose facilities and modules cover everything in `input`, for Advanced
+// mode, where the player enters what they have rather than their RV level.
+function homeLevelCovering(input) {
+    for (let level = 1; level <= MAX_HOME_LEVEL; level++) {
+        const allowed = simpleSetup(level);
+        const facilitiesFit = FACILITIES.every(f => {
+            const have = input.facilities[f.name];
+            if (tierCount(have) === 0) return true;
+            const cap = allowed.facilities[f.name];
+            return tierCount(have) <= tierCount(cap) && (f.hasLevels === false || tierLevel(have) <= tierLevel(cap));
+        });
+        const modulesFit = Object.entries(input.modules).every(([name, level_]) => level_ <= (allowed.modules[name] ?? 0));
+        if (facilitiesFit && modulesFit) return level;
+    }
+    return MAX_HOME_LEVEL;
+}
+
+// Every change within reach of `base` (a plan input), as `{ label, input, group }`. Changes
+// sharing a `group` are one thing taken further and further (a module at each level up to what
+// the RV level allows), listed least first; the card shows the least one that gets the most.
+function improvementCandidates(base, setup) {
+    const candidates = [];
+    const owns = name => tierCount(base.facilities[name]) > 0;
+
+    // Recipes the player hasn't unlocked, at a facility they have.
+    const skipped = new Set(planContext?.skipped ?? skippedRecipes);
+    const locked = [
+        ...SPECIAL_RECIPES.map(r => ({ ...r, note: false })),
+        ...(base.season ? SEASON.recipeNotes.map(r => ({ ...r, note: true })) : []),
+    ];
+    for (const recipe of locked) {
+        if (!base.exclude.includes(recipe.name) || skipped.has(recipe.name)) continue;
+        if (recipe.facility && !owns(recipe.facility)) continue;
+        candidates.push({
+            kind: 'Recipes',
+            label: recipe.note ? `Recipe Note: ${prettyItem(recipe.name)}` : `Unlock ${prettyItem(recipe.name)}`,
+            input: { ...base, exclude: base.exclude.filter(name => name !== recipe.name) },
+        });
+    }
+    // Recipes the player skipped: they may have a reason, but they should know what it costs.
+    for (const name of [...skipped].sort((a, b) => prettyItem(a).localeCompare(prettyItem(b)))) {
+        if (!base.exclude.includes(name)) continue;
+        candidates.push({
+            kind: 'Recipes',
+            label: `Unskip ${prettyItem(name)}`,
+            input: { ...base, exclude: base.exclude.filter(n => n !== name) },
+        });
+    }
+
+    // Every level above the one given is tried, here and below, since one level can gain nothing
+    // while the next gains a lot.
+    const levelsAbove = (from, to) => Array.from({ length: Math.max(0, to - from) }, (_, i) => from + 1 + i);
+
+    // An Aniimo at a higher level, up to the highest the game is known to have.
+    if (setup.startsWith('best')) {
+        const abilities = new Set(FACILITIES.filter(f => f.ability && owns(f.name)).map(f => f.ability));
+        for (const ability of levelledAbilities().filter(a => abilities.has(a))) {
+            const level = base.aniimo_levels[ability] ?? defaultLevelFor(ability);
+            for (const next of levelsAbove(level, defaultLevelFor(ability))) {
+                candidates.push({
+                    kind: 'Aniimo', group: `aniimo:${ability}`, family: `${ability} Aniimo`, level: next,
+                    label: `${ability} Aniimo Lv.${next}`,
+                    input: { ...base, aniimo_levels: { ...base.aniimo_levels, [ability]: next } },
+                });
+            }
+        }
+    }
+
+    // Advanced mode: a module at a higher level, one more facility, or one facility at a higher
+    // level, within what the RV level covering the rest allows.
+    if (planContext && !planContext.simple) {
+        const allowed = simpleSetup(homeLevelCovering(base));
+        for (const [module, level] of Object.entries(base.modules)) {
+            for (const next of levelsAbove(level, allowed.modules[module] ?? 0)) {
+                candidates.push({
+                    kind: 'Modules', group: `module:${module}`, family: MODULE_NAMES[module] || module, level: next,
+                    label: `${MODULE_NAMES[module] || module} Lv.${next}`,
+                    input: { ...base, modules: { ...base.modules, [module]: next } },
+                });
+            }
+        }
+        for (const f of FACILITIES) {
+            const tiers = (base.facilities[f.name] || []).filter(t => t.count > 0);
+            const cap = allowed.facilities[f.name];
+            const capLevel = f.hasLevels === false ? 1 : tierLevel(cap);
+            if (tierCount(tiers) < tierCount(cap)) {
+                for (const level of levelsAbove(0, capLevel)) {
+                    candidates.push({
+                        kind: 'Facilities', group: `another:${f.name}`, family: `+1 ${f.name}`,
+                        level: f.hasLevels === false || capLevel === 1 ? null : level,
+                        label: f.hasLevels === false || capLevel === 1 ? `+1 ${f.name}` : `+1 ${f.name} (Lv.${level})`,
+                        input: { ...base, facilities: { ...base.facilities, [f.name]: [...tiers, { count: 1, level }] } },
+                    });
+                }
+            }
+            if (f.hasLevels === false || tiers.length === 0) continue;
+            const lowest = tiers.reduce((a, b) => (b.level < a.level ? b : a));
+            for (const level of levelsAbove(lowest.level, capLevel)) {
+                const raised = tiers
+                    .map(t => (t === lowest ? { ...t, count: t.count - 1 } : t))
+                    .filter(t => t.count > 0)
+                    .concat({ count: 1, level });
+                candidates.push({
+                    kind: 'Facilities', group: `upgrade:${f.name}`, level,
+                    family: tierCount(tiers) > 1 ? `1 ${f.name} to` : `${f.name} to`,
+                    label: tierCount(tiers) > 1 ? `1 ${f.name} to Lv.${level}` : `${f.name} to Lv.${level}`,
+                    input: { ...base, facilities: { ...base.facilities, [f.name]: raised } },
+                });
+            }
+        }
+    }
+    return candidates;
+}
+
+// Starts ranking what could improve the plan on screen, unless it's already been worked out.
+function rankImprovementsFor(setup) {
+    stopRanking();
+    if (!lastPlanInput) return;
+    if (rankingsBySetup[setup]) {
+        ranking = rankingsBySetup[setup];
+        renderImprovements();
+        setStep('improve', 'done', `${ranking.candidates.length} changes`);
+        return;
+    }
+    setStep('improve', 'start');
+    const base = { ...lastPlanInput, ...aniimoInput(setup) };
+    const measure = rankMeasure();
+    const candidates = improvementCandidates(base, setup);
+    ranking = {
+        setup, measure, candidates, base: null, results: [], done: false,
+        homeLevel: planContext?.simple ? null : homeLevelCovering(base),
+    };
+    renderImprovements();
+    if (candidates.length === 0) {
+        ranking.done = true;
+        rankingsBySetup[setup] = ranking;
+        renderImprovements();
+        setStep('improve', 'done', 'nothing to check');
+        return;
+    }
+    const runId = rankRunId;
+    const current = ranking;
+    // The candidates dealt out across the workers, each keeping their place in the list.
+    const shares = Array.from({ length: Math.min(RANK_WORKERS, candidates.length) }, () => []);
+    candidates.forEach((candidate, i) => shares[i % shares.length].push(i));
+    let running = shares.length;
+    let failed = false;
+    rankWorkers = shares.map(indices => {
+        const worker = new Worker(WORKER_URL, { type: 'module' });
+        worker.onmessage = (event) => {
+            if (runId !== rankRunId) return;
+            const { type, count: result, ok } = event.data;
+            if (type === 'progress') {
+                if (result.index === -1) current.base ||= result;
+                else current.results[indices[result.index]] = result;
+                setStep('improve', 'start', `${current.results.filter(Boolean).length} of ${candidates.length}`);
+            } else {
+                if (!ok) console.warn('Ranking changes failed:', event.data.error);
+                finish(!ok);
+            }
+            if (ranking === current) renderImprovements();
+        };
+        let finished = false;
+        const finish = (fail) => {
+            if (finished) return;
+            finished = true;
+            failed ||= fail;
+            worker.terminate();
+            if (--running === 0) {
+                current.done = true;
+                if (!failed) rankingsBySetup[setup] = current;
+                setStep('improve', failed ? 'fail' : 'done', `${candidates.length} changes`);
+                rankWorkers = [];
+            }
+        };
+        worker.onerror = (event) => {
+            if (runId !== rankRunId) return;
+            console.warn('Ranking changes failed:', event.message || event);
+            finish(true);
+            if (ranking === current) renderImprovements();
+        };
+        worker.postMessage({
+            id: 1,
+            type: 'rank_improvements',
+            // The plan's own first solve is the plan as it stands, so no worker solves it again.
+            payload: JSON.stringify({ measure, base, candidates: indices.map(i => candidates[i].input), baseTop: plansBySetup[setup]?.measure_top }),
+        });
+        return worker;
+    });
+}
+
+// The smallest gain worth showing (see `RANK_MIN_GAIN` in worker.js).
+const RANK_MIN_GAIN = 1e-3;
+
+// How a change compares with the plan, or null if it doesn't help: `{ score, text }`, with
+// `score` ordering changes that move the measure ahead of those that only earn more Home Coins.
+function improvementGain(result) {
+    const base = ranking.base;
+    if (!result || result.top == null || !base || base.top == null) return null;
+    const about = result.proven === false || base.proven === false ? '~' : '';
+    const { multiplier, suffix } = RATE_UNIT_SECONDS[document.getElementById('rate-unit').value] || RATE_UNIT_SECONDS.second;
+    if (result.top > base.top * (1 + RANK_MIN_GAIN) + 1e-12) {
+        if (ranking.measure === 'level_up') {
+            const before = base.top > 0 ? PACE_UNIT_SECONDS / base.top : null;
+            const after = PACE_UNIT_SECONDS / result.top;
+            return {
+                score: 1 + (before ? (before - after) / before : 1),
+                text: before
+                    ? `${about}−${formatDuration(before - after)} level-up (${formatDuration(after)})`
+                    : `Level-up in ${about}${formatDuration(after)}`,
+            };
+        }
+        const label = ranking.measure === 'coins' ? 'Home Coins' : priorityLabel(ranking.measure, planContext?.aniipod);
+        const added = `+${formatRate((result.top - base.top) * multiplier)}${suffix}`;
+        return {
+            score: 1 + (base.top > 0 ? (result.top - base.top) / base.top : 1),
+            text: base.top > 0 ? `${about}+${formatPercent((result.top - base.top) / base.top)} ${label} (${added})` : `${about}${added} ${label}`,
+        };
+    }
+    const coins = result.coins;
+    if (coins && coins.base > 0 && coins.value > coins.base * (1 + RANK_MIN_GAIN)) {
+        const gain = (coins.value - coins.base) / coins.base;
+        return {
+            score: gain,
+            text: `${about}+${formatPercent(gain)} Home Coins (+${formatRate((coins.value - coins.base) * multiplier)}${suffix})`,
+        };
+    }
+    return null;
+}
+
+const PACE_UNIT_SECONDS = 86400;
+
+function formatPercent(share) {
+    const percent = share * 100;
+    return `${percent >= 10 ? Math.round(percent) : percent.toFixed(1)}%`;
+}
+
+function renderImprovements() {
+    const card = document.getElementById('improve-card');
+    if (!ranking || !lastPlan?.success) {
+        card.style.display = 'none';
+        return;
+    }
+    card.style.display = 'block';
+    const checked = ranking.results.filter(Boolean).length;
+    const total = ranking.candidates.length;
+    const within = ranking.homeLevel ? ` Within RV ${ranking.homeLevel} limits.` : '';
+    const by = ranking.measure === 'level_up' ? 'level-up time, then Home Coins'
+        : ranking.measure === 'coins' ? 'Home Coins' : `${priorityLabel(ranking.measure, planContext?.aniipod)}, then Home Coins`;
+    // One row per change, or per group: the least of it that gets the most it can (see
+    // `improvementCandidates`).
+    const best = new Map();
+    ranking.candidates.forEach((candidate, i) => {
+        const gain = improvementGain(ranking.results[i]);
+        if (!gain) return;
+        const key = candidate.group || `#${i}`;
+        const held = best.get(key);
+        if (!held || gain.score > held.gain.score * (1 + RANK_MIN_GAIN)) best.set(key, { candidate, gain });
+    });
+    const rows = [...best.values()].sort((a, b) => b.gain.score - a.gain.score);
+    const options = new Set(ranking.candidates.map((c, i) => c.group || `#${i}`)).size;
+    const status = total === 0 ? `Nothing left to unlock or upgrade.${within}`
+        : !ranking.done ? `Checking ${checked} of ${total}…${within}`
+        : rows.length === 0 ? `No improvements found (${options} checked).${within}`
+        : `Ranked by ${by}. ${rows.length} of ${options} help.${within}`;
+    // The status line opens what was checked. The card is rebuilt as each result comes in; keep
+    // the list open if the player opened it.
+    const open = !!document.querySelector('#improve-list .improve-checked')?.open;
+    document.getElementById('improve-list').innerHTML = improvementsChecked(best, status, open) + (rows.length
+        ? `<ol class="improve-list">${rows.map(r => `<li><span class="improve-name">${r.candidate.label}</span><span class="improve-gain">${r.gain.text}</span></li>`).join('')}</ol>`
+        : '');
+}
+
+// Everything the ranking tries, by kind, each with how it came out: the gain, "no gain", or
+// still to check, behind `status`. A change tried at several levels is one line, e.g. "Earth
+// Aniimo Lv.2–4".
+function improvementsChecked(best, status, open) {
+    if (!ranking.candidates.length) return `<p class="hint">${status}</p>`;
+    const groups = new Map();
+    ranking.candidates.forEach((candidate, i) => {
+        const key = candidate.group || `#${i}`;
+        if (!groups.has(key)) groups.set(key, { kind: candidate.kind, candidates: [], indices: [] });
+        groups.get(key).candidates.push(candidate);
+        groups.get(key).indices.push(i);
+    });
+    const kinds = new Map();
+    for (const [key, group] of groups) {
+        const first = group.candidates[0];
+        const levels = group.candidates.map(c => c.level).filter(l => l != null);
+        const name = first.family
+            ? `${first.family}${levels.length ? ` Lv.${levels.length > 1 ? `${levels[0]}–${levels[levels.length - 1]}` : levels[0]}` : ''}`
+            : first.label;
+        const done = group.indices.every(i => ranking.results[i]);
+        const found = best.get(key);
+        const outcome = found
+            ? `<span class="improve-gain">${found.candidate.level != null && levels.length > 1 ? `Lv.${found.candidate.level}: ` : ''}${found.gain.text}</span>`
+            : `<span class="improve-none">${done ? 'no gain' : 'checking…'}</span>`;
+        if (!kinds.has(group.kind)) kinds.set(group.kind, []);
+        kinds.get(group.kind).push(`<li><span>${name}</span>${outcome}</li>`);
+    }
+    return `<details class="explain improve-checked"${open ? ' open' : ''}><summary>${status}</summary>${[...kinds]
+        .map(([kind, items]) => `<p class="assume-title">${kind}</p><ul class="improve-checked-list">${items.join('')}</ul>`)
+        .join('')}</details>`;
+}
+
+// --- Homeland layout -------------------------------------------------------------------
+// The whole homeland around one Storage Unit (see layout.js): each finished batch is carried
+// there, so the busiest facilities sit closest. Environment buildings keep the plots they cover
+// exactly as planned, moving as one block. Facilities with no known size are left out and named.
+
+// Trips per hour for each unit of a plan row: one per finished batch.
+function tripsPerUnit(step) {
+    if (step.status !== 'producing' || !step.cycle_time || !step.facility_count) return 0;
+    const busy = step.busy_units ?? step.facility_count;
+    return (busy / step.cycle_time / step.facility_count) * 3600;
+}
+
+// Whether a crop needs a growing environment: grown without one, a building's temperature
+// would change it. Crops that need none grow the same anywhere.
+const needsEnvironment = item => !!recipeIndex.find(r => r.name === item)?.environment;
+
+// The plan as pieces for `layOut`: environment blocks, then one piece per other facility unit,
+// then whatever the player owns that the plan doesn't use.
+function homelandPieces(plan, input) {
+    const pieces = [];
+    const placed = {};
+    const count = (facility, n = 1) => { placed[facility] = (placed[facility] || 0) + n; };
+    const unplaced = new Set();
+    const steps = (plan.coin_items || []).filter(s => s.facility);
+    const envSteps = steps.filter(s => s.environment && s.status === 'producing');
+    const assignments = plan.environment_assignments || [];
+
+    // Environment blocks, grouped as the plan's own maps are (see `renderFacilityPlan`).
+    const units = [];
+    ENVIRONMENT_MODE_ORDER.forEach(mode => {
+        const rows = envSteps.filter(s => s.environment === mode);
+        if (rows.length) splitByEnvironmentUnit(rows, assignments.filter(a => a.mode === mode)).forEach(unit => units.push({ mode, unit }));
+    });
+    const blocks = new Map();
+    units.forEach(({ mode, unit }, i) => {
+        const key = unit.partner ? `${unit.building}|${unit.partner.join(',')}|${i}` : `#${i}`;
+        // A pair's zones are one place: gather them under the first zone that names the pair.
+        const pairKey = unit.partner ? [...blocks.keys()].find(k => k.startsWith(`${unit.building}|${unit.partner.join(',')}|`) && !blocks.get(k).parts.some(part => part.zone === unit.zone)) : null;
+        const block = blocks.get(pairKey) || { mode, unit, parts: [] };
+        block.parts.push({ zone: unit.zone ?? 0, layout: unit.layout, rows: unit.rows });
+        blocks.set(pairKey || key, block);
+    });
+    const placedInBlocks = {};
+    // Each is a cluster for `layOut`: its buildings, and the plots they cover, which may go
+    // anywhere in their zone.
+    blocks.forEach(({ mode, unit, parts }) => {
+        const size = environmentBuildingSize(unit.building);
+        const buildings = [{ x: 0, y: 0, w: size, h: size, facility: unit.building, mode: unit.pairModes ? unit.pairModes[0] : mode, building: true }];
+        count(unit.building);
+        if (unit.partner) {
+            const partnerSize = environmentBuildingSize(unit.partner[0]);
+            buildings.push({ x: unit.partner[1], y: unit.partner[2], w: partnerSize, h: partnerSize, facility: unit.partner[0], mode: unit.pairModes ? unit.pairModes[1] : mode, building: true });
+            count(unit.partner[0]);
+        }
+        const plots = [];
+        const planned = [];
+        parts.forEach(({ zone, layout, rows }) => {
+            // Each plot in this zone gets one of the crops planned for its facility here.
+            const crops = {};
+            rows.forEach(r => {
+                for (let n = 0; n < r.facility_count; n++) (crops[r.facility] ||= []).push({ crop: r.item_name, trips: tripsPerUnit(r), cycle: r.cycle_time });
+            });
+            layout.forEach(p => {
+                const crop = (crops[p.facility] || []).shift() || { crop: null, trips: 0 };
+                plots.push({ w: p.size, h: p.size, weight: crop.trips, cycle: crop.cycle, zone: unit.partner ? zone : 0, facility: p.facility, crop: crop.crop });
+                planned.push({ x: p.x, y: p.y });
+                count(p.facility);
+                placedInBlocks[`${p.facility}|${crop.crop}`] = (placedInBlocks[`${p.facility}|${crop.crop}`] || 0) + 1;
+            });
+        });
+        pieces.push({ cluster: true, buildings, plots, planned });
+    });
+
+    // Recipes taking turns on the same units (the Bench's and Kiln's tiers) share them: as many
+    // units as their busy time together needs, each running every tier in turn at its share.
+    const takesTurns = step => step.status === 'producing' && !!recipeIndex.find(r => r.name === step.item_name)?.turns;
+    const turnGroups = new Map();
+    steps.filter(takesTurns).forEach(step => turnGroups.set(step.facility, [...(turnGroups.get(step.facility) || []), step]));
+    turnGroups.forEach((rows, facility) => {
+        const footprint = FACILITY_FOOTPRINTS[facility];
+        if (!footprint) {
+            unplaced.add(facility);
+            return;
+        }
+        const busy = rows.reduce((sum, r) => sum + (r.busy_units ?? r.facility_count), 0);
+        const n = Math.max(1, Math.ceil(busy - 1e-6));
+        const jobs = rows.filter(r => r.cycle_time > 0).map(r => ({ item: r.item_name, cycle: r.cycle_time, rate: (r.busy_units ?? r.facility_count) / r.cycle_time / n }));
+        const weight = jobs.reduce((sum, j) => sum + j.rate * 3600, 0);
+        for (let i = 0; i < n; i++) {
+            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight, jobs, cycle: jobs[0]?.cycle, facility, crop: jobs[0]?.item ?? null, sensitive: false }] });
+        }
+        count(facility, n);
+    });
+
+    // Everything else, one unit at a time; environment crops no map took count here too.
+    steps.filter(step => !takesTurns(step)).forEach(step => {
+        let n = step.facility_count;
+        if (step.environment && step.status === 'producing') {
+            const key = `${step.facility}|${step.item_name}`;
+            const taken = Math.min(n, placedInBlocks[key] || 0);
+            placedInBlocks[key] = (placedInBlocks[key] || 0) - taken;
+            n -= taken;
+        }
+        const footprint = FACILITY_FOOTPRINTS[step.facility];
+        if (!footprint) {
+            if (n > 0) unplaced.add(step.facility);
+            return;
+        }
+        for (let i = 0; i < n; i++) {
+            // A crop that needs an environment but is grown without one stays out of every
+            // coverage square, so no building's temperature changes it.
+            const growing = step.status === 'producing';
+            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: tripsPerUnit(step), cycle: step.cycle_time, facility: step.facility, crop: growing ? step.item_name : null, sensitive: growing && needsEnvironment(step.item_name) }] });
+        }
+        count(step.facility, n);
+    });
+
+    // What's owned but not in the plan at all, such as environment buildings it didn't need.
+    FACILITIES.forEach(f => {
+        const owned = tierCount(input.facilities[f.name]);
+        const extra = owned - (placed[f.name] || 0);
+        if (extra <= 0) return;
+        const footprint = f.name in ENVIRONMENT_BUILDING_SIZES
+            ? [environmentBuildingSize(f.name), environmentBuildingSize(f.name)]
+            : FACILITY_FOOTPRINTS[f.name];
+        if (!footprint) {
+            unplaced.add(f.name);
+            return;
+        }
+        const building = f.name in ENVIRONMENT_BUILDING_SIZES;
+        for (let i = 0; i < extra; i++) pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight: 0, facility: f.name, crop: null, building, mode: null }] });
+    });
+    return { pieces, unplaced: [...unplaced] };
+}
+
+// Colors for the layout: crops and Aniimo materials as in the environment maps, the rest by
+// category.
+const LAYOUT_CATEGORY_COLORS = {
+    'Materials': '#8d8f5a',
+    'Aniimo Materials': '#5c9bd6',
+    'Materials Processing': '#8a7fc4',
+    'Environment': '#9aa0a8',
+};
+const layoutColor = m => m.building
+    ? (ENVIRONMENT_MODE_COLORS[m.mode] || '#9aa0a8')
+    : ENVIRONMENT_FACILITY_COLORS[m.facility] || LAYOUT_CATEGORY_COLORS[FACILITY_CATEGORY_BY_NAME.get(m.facility)] || '#888888';
+const initialsOf = name => name.split(/[\s-]+/).map(w => w[0]).join('').toUpperCase();
+
+let layoutRunId = 0;
+let layoutWorker = null;
+
+// Every plot of the homeland, `{ number, x, y, w, h }` in tiles, with the top left at the origin.
+function homelandPlots() {
+    return HOMELAND_PLOTS.flatMap((row, r) => row.map((number, c) => ({
+        number, x: c * HOMELAND_PLOT_SIZE.w, y: r * HOMELAND_PLOT_SIZE.h, w: HOMELAND_PLOT_SIZE.w, h: HOMELAND_PLOT_SIZE.h,
+    })));
+}
+
+// The RV level the layout is for: the one given in Simple mode, else the lowest that allows
+// everything entered (see `homeLevelCovering`).
+function layoutHomeLevel() {
+    return isSimpleMode() ? selectedHomeLevel() : homeLevelCovering(lastPlanInput);
+}
+
+function attachLayoutHandlers() {
+    document.getElementById('layout-whole').addEventListener('change', (e) => {
+        layoutShowsWhole = e.target.checked;
+        if (lastLayout) drawLayout(lastLayout);
+    });
+    document.getElementById('layout-sim-on').addEventListener('change', () => {
+        if (lastLayout) drawLayout(lastLayout);
+    });
+    document.getElementById('layout-replay').addEventListener('click', () => {
+        if (layoutSim) resetLayoutSim(layoutSim);
+    });
+}
+
+function drawLayout(drawn) {
+    const diagram = document.getElementById('layout-diagram');
+    diagram.innerHTML = homelandSvg(drawn.layout, drawn.homeLevel);
+    // With the simulation off, the layout is drawn on its own.
+    const on = document.getElementById('layout-sim-on').checked;
+    diagram.classList.toggle('no-sim', !on);
+    const stock = new Map(planContext?.levelUp ? lastPlanInput?.level_up?.stock || [] : []);
+    startLayoutSim(on ? diagram.querySelector('.layout-svg') : null, layoutFlows(drawn.layout), stock);
+}
+
+function renderHomelandLayout(plan) {
+    const card = document.getElementById('layout-card');
+    if (!plan?.success || !lastPlanInput) {
+        card.style.display = 'none';
+        return;
+    }
+    const runId = ++layoutRunId;
+    lastLayout = null;
+    stopLayoutSim();
+    setStep('layout', 'start');
+    card.style.display = 'block';
+    document.getElementById('layout-summary').textContent = 'Laying out…';
+    document.getElementById('layout-diagram').innerHTML = '';
+    // Worked out in a worker of its own: a large homeland takes a few seconds.
+    const { pieces, unplaced } = homelandPieces(plan, lastPlanInput);
+    const homeLevel = layoutHomeLevel();
+    const cells = homelandPlots().filter(p => p.number <= homeLevel);
+    if (layoutWorker) layoutWorker.terminate();
+    layoutWorker = new Worker(WORKER_URL.replace('worker.js', 'layout-worker.js'), { type: 'module' });
+    layoutWorker.onmessage = (event) => {
+        layoutWorker.terminate();
+        layoutWorker = null;
+        if (runId !== layoutRunId) return;
+        const layout = event.data;
+        const at = layout.storageAt;
+        // Buildings carry nothing themselves.
+        const members = layout.pieces.flatMap(p => p.members).map(m => ({ ...m, weight: m.weight || 0 }));
+        const trips = members.reduce((sum, m) => sum + m.weight, 0);
+        const walked = members.reduce((sum, m) => sum + m.weight * Math.hypot(m.x + m.w / 2 - at.x, m.y + m.h / 2 - at.y), 0);
+        const noRoom = [...new Set(layout.unplaced.map(i => {
+            const piece = pieces[i];
+            return piece.cluster ? `${piece.buildings[0].facility} and its plots` : piece.members[0].facility;
+        }))];
+        const notes = [
+            noRoom.length ? `No room found in RV ${homeLevel}'s plots for: ${noRoom.join(', ')}.` : '',
+            unplaced.length ? `Not placed, size unknown: ${unplaced.join(', ')}.` : '',
+        ].filter(Boolean).join(' ');
+        document.getElementById('layout-summary').textContent = `${trips > 0
+            ? `${formatNumber(Math.round(trips))} trips/hour to the Storage Unit, ${(walked / trips).toFixed(1)} tiles each on average, in the ${cells.length} plot${cells.length === 1 ? '' : 's'} open at RV ${homeLevel}.`
+            : 'Nothing in this plan is carried to the Storage Unit.'}${notes ? ` ${notes}` : ''}`;
+        lastLayout = { layout, homeLevel };
+        drawLayout(lastLayout);
+        setStep('layout', 'done');
+    };
+    layoutWorker.onerror = (event) => {
+        console.error('Homeland layout failed:', event.message || event);
+        if (runId !== layoutRunId) return;
+        stopLayout();
+        document.getElementById('layout-summary').textContent = 'The layout couldn\'t be worked out.';
+        setStep('layout', 'fail');
+    };
+    layoutWorker.postMessage({ pieces, cells: cells.map(({ x, y, w, h }) => ({ x, y, w, h })) });
+}
+
+// Stops a layout still being worked out, so it can't land over a newer plan.
+function stopLayout() {
+    stopLayoutSim();
+    layoutRunId++;
+    layoutWorker?.terminate();
+    layoutWorker = null;
+    lastLayout = null;
+}
+
+// Whether the layout shows the whole homeland rather than just what's placed; the player's toggle.
+let layoutShowsWhole = false;
+let lastLayout = null;
+
+function homelandSvg(layout, homeLevel) {
+    // Each environment building in use covers the 9x9 square around its center, drawn under
+    // everything in its mode's color as on the building's own map.
+    const coverage = layout.pieces.flatMap(p => p.members)
+        .filter(m => m.building && m.mode)
+        .map(m => ({ x: m.x + m.w / 2 - ENVIRONMENT_COVERAGE_RADIUS, y: m.y + m.h / 2 - ENVIRONMENT_COVERAGE_RADIUS, w: ENVIRONMENT_COVERAGE_RADIUS * 2, h: ENVIRONMENT_COVERAGE_RADIUS * 2, mode: m.mode }));
+    // The whole homeland, its plots marked out and the ones not open yet shaded.
+    const plots = homelandPlots();
+    // Zoomed to what's placed, a couple of tiles around it, unless the whole homeland is asked for.
+    const placed = [layout.storage, ...layout.pieces.flatMap(p => p.members)];
+    const whole = layoutShowsWhole;
+    const minX = whole ? -1 : Math.floor(Math.min(...placed.map(r => r.x))) - 2;
+    const minY = whole ? -1 : Math.floor(Math.min(...placed.map(r => r.y))) - 2;
+    const maxX = whole ? Math.max(...plots.map(p => p.x + p.w)) + 1 : Math.ceil(Math.max(...placed.map(r => r.x + r.w))) + 2;
+    const maxY = whole ? Math.max(...plots.map(p => p.y + p.h)) + 1 : Math.ceil(Math.max(...placed.map(r => r.y + r.h))) + 2;
+    // Locked plots last, so where one meets an open plot, the edge between them reads red.
+    const plotShapes = [...plots].sort((a, b) => (b.number <= homeLevel) - (a.number <= homeLevel)).map(p => {
+        const open = p.number <= homeLevel;
+        // An open plot is named by its number; one still to come by the RV level that opens it.
+        return `<g class="layout-plot${open ? '' : ' locked'}"><rect x="${p.x}" y="${p.y}" width="${p.w}" height="${p.h}" />
+            <text x="${p.x + 0.6}" y="${p.y + 0.9}" font-size="0.9">${open ? 'Plot' : 'RV'} ${p.number}</text></g>`;
+    }).join('');
+    const lines = [];
+    for (let x = minX; x <= maxX; x++) lines.push(`<line x1="${x}" y1="${minY}" x2="${x}" y2="${maxY}" />`);
+    for (let y = minY; y <= maxY; y++) lines.push(`<line x1="${minX}" y1="${y}" x2="${maxX}" y2="${y}" />`);
+    const maxTrips = Math.max(...layout.pieces.flatMap(p => p.members.map(m => m.weight || 0)), 1e-9);
+    const shapes = layout.pieces.flatMap(p => p.members).map(m => {
+        const color = layoutColor(m);
+        const away = Math.hypot(m.x + m.w / 2 - (layout.storage.x + layout.storage.w / 2), m.y + m.h / 2 - (layout.storage.y + layout.storage.h / 2));
+        const tip = tipAttrs(m.facility, {
+            detail: m.jobs ? m.jobs.map(j => prettyItem(j.item)).join(', ') : m.crop ? prettyItem(m.crop) : m.building && m.mode ? m.mode : 'Idle',
+            stats: m.weight > 0 ? `${formatRate(m.weight)} trips/hour · ${away.toFixed(1)} tiles from storage` : '',
+            color,
+        });
+        const label = Math.min(m.w, m.h) >= 1.5 ? `<text x="${m.x + m.w / 2}" y="${m.y + m.h / 2}" font-size="${Math.min(0.8, m.w / 3)}">${initialsOf(m.facility)}</text>` : '';
+        // Busier pieces are filled more solidly; idle ones are an outline.
+        const fill = m.building ? 0.9 : m.weight > 0 ? 0.35 + 0.55 * Math.sqrt(m.weight / maxTrips) : 0.08;
+        if (m.building) {
+            // As on the building's own map: its mode's color, with the game's symbol for it.
+            return `<g class="env-building" ${tip}><rect x="${m.x + 0.05}" y="${m.y + 0.05}" width="${m.w - 0.1}" height="${m.h - 0.1}" rx="0.3"
+                fill="${color}" fill-opacity="${m.mode ? 1 : 0.25}" stroke="currentColor" stroke-opacity="0.6" stroke-width="0.08" />
+                ${m.mode ? environmentBuildingIcon(m.facility, m.mode, m.x + m.w / 2, m.y + m.h / 2) : ''}</g>`;
+        }
+        return `<g class="layout-piece" ${tip}><rect x="${m.x + 0.04}" y="${m.y + 0.04}" width="${m.w - 0.08}" height="${m.h - 0.08}" rx="0.2"
+            fill="${color}" fill-opacity="${fill.toFixed(2)}" stroke="${color}" stroke-width="0.06" />${label}</g>`;
+    }).join('');
+    const coverageShapes = coverage.map(c => {
+        const tint = ENVIRONMENT_MODE_COLORS[c.mode] || '#9aa0a8';
+        const shade = (0.12 * (ENVIRONMENT_MODE_SHADE[c.mode] ?? 1)).toFixed(3);
+        return `<rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" fill="${tint}" fill-opacity="${shade}" />`;
+    }).join('');
+    // Its edge goes over the pieces, so the square reads through whatever stands in it.
+    const coverageEdges = coverage.map(c => {
+        const tint = ENVIRONMENT_MODE_COLORS[c.mode] || '#9aa0a8';
+        return `<rect x="${c.x}" y="${c.y}" width="${c.w}" height="${c.h}" fill="none"
+            stroke="${tint}" stroke-opacity="0.8" stroke-dasharray="0.35,0.25" stroke-width="0.08" />`;
+    }).join('');
+    const s = layout.storage;
+    // A line from everything carried to the Storage Unit, each drawn once its first batch is in,
+    // and a ring for the batch it's on (see "Deliveries"), in the same order as `layoutFlows`.
+    const flowList = layoutFlows(layout);
+    const flows = flowList.map(f => `<line x1="${f.x1}" y1="${f.y1}" x2="${f.x2}" y2="${f.y2}" class="layout-flow-line" />`).join('');
+    const rings = flowList.map(f => `<g class="layout-ring" transform="translate(${f.rx.toFixed(2)} ${f.ry.toFixed(2)})">
+            <circle r="${f.ring.toFixed(2)}" class="ring-track" /><circle r="${f.ring.toFixed(2)}" class="ring-fill" pathLength="1" stroke-dasharray="0 1" transform="rotate(-90)" /></g>`).join('');
+    const totalTrips = layout.pieces.flatMap(p => p.members).reduce((sum, m) => sum + (m.weight || 0), 0);
+    return `<svg class="layout-svg" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}" role="img" aria-label="Homeland layout">
+        <defs><pattern id="layout-locked" width="1" height="1" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <line x1="0" y1="0" x2="0" y2="1" class="layout-hatch" /></pattern></defs>
+        <g class="env-grid">${lines.join('')}</g>
+        <g class="layout-plots">${plotShapes}</g>
+        <g class="layout-coverage">${coverageShapes}</g>
+        ${shapes}
+        <g class="layout-coverage-edges" pointer-events="none">${coverageEdges}</g>
+        <g class="layout-rings" pointer-events="none">${rings}</g>
+        <g class="layout-flows" pointer-events="none">${flows}<g class="layout-dots"></g></g>
+        <g class="layout-piece layout-storage-unit" ${tipAttrs('Storage Unit', { detail: 'Where everything is carried', stats: totalTrips > 0 ? `${formatRate(totalTrips)} trips/hour` : '' })}><rect x="${s.x + 0.04}" y="${s.y + 0.04}" width="${s.w - 0.08}" height="${s.h - 0.08}" rx="0.2" class="layout-storage" />
+        <text x="${s.x + s.w / 2}" y="${s.y + s.h / 2}" font-size="0.8" class="layout-storage-text">SU</text></g>
+    </svg>`;
+}
+
+// --- Deliveries ------------------------------------------------------------------------
+// The layout plays its homeland out in sped-up game time, from the moment everything is set up.
+// Every finished batch goes to the Storage Unit, with its byproduct, and adds to what's there; a
+// recipe starts a batch only once the Storage Unit has all it takes, and takes it out. Each unit
+// also keeps to the plan's pace for each recipe it runs, so it doesn't take more than its share
+// of what others need; a Bench or Kiln runs its tiers in turn. A ring on each shows its batch,
+// amber while it waits for materials. What isn't modeled: carrying takes no time (the dots walk
+// at a fixed pace just to show it), and which of two recipes wanting the same thing gets it first
+// (they take turns at random).
+
+// Roughly how many real seconds the build-up takes, however long it is in game (at least a
+// minute a second, at most an hour); a guess from first batches, not the whole wait.
+const SIM_BUILD_UP = 10;
+// Tiles a second a delivery walks, in real time.
+const SIM_PACE = 4;
+// Game seconds per step of the simulation.
+const SIM_STEP = 2;
+// Real seconds between two dots on the same line, at the least.
+const SIM_DOT_GAP = 0.12;
+let layoutSim = null;
+
+// Each piece carried to the Storage Unit: its line and ring, and its jobs: what it makes, how
+// long a batch takes and its pace in the plan (batches a second). Most pieces have one; a Bench
+// or Kiln unit has one per tier it takes turns on (see `homelandPieces`).
+function layoutFlows(layout) {
+    const s = layout.storage;
+    const x2 = s.x + s.w / 2;
+    const y2 = s.y + s.h / 2;
+    return layout.pieces.flatMap(p => p.members).filter(m => m.weight > 0 && m.crop && m.cycle > 0).map(m => {
+        const x1 = m.x + m.w / 2;
+        const y1 = m.y + m.h / 2;
+        const ring = Math.min(0.45, Math.min(m.w, m.h) * 0.22);
+        return {
+            x1, y1, x2, y2, length: Math.hypot(x2 - x1, y2 - y1),
+            ring, rx: m.x + m.w - ring - 0.12, ry: m.y + ring + 0.12,
+            jobs: m.jobs || [{ item: m.crop, cycle: m.cycle, rate: m.weight / 3600 }],
+        };
+    });
+}
+
+// What a recipe takes and gives, from the recipe list: ingredients with amounts, its item and
+// yield (a quick variant makes the regular item), and its byproduct.
+function recipeTerms(name) {
+    const r = recipeIndex.find(r => r.name === name);
+    return {
+        takes: (r?.ingredients || []).map((ingredient, i) => [ingredient, r.amounts?.[i] ?? 1]),
+        makes: name.replace(/^quick_/, ''),
+        yield: r?.yieldAmount || 1,
+        byproduct: r?.byproduct ? [r.byproduct, r.byproductAmount || 0] : null,
+    };
+}
+
+// When an item's first batch could be ready, from the moment everything is set up: a crop's grow
+// time, or a recipe's own batch time after its slowest ingredient is first there, as the planner
+// works it out (see `item_lead_time` in optimizer.rs). Only sets the simulation's speed.
+function firstBatchTimes(flows) {
+    const batch = new Map();
+    flows.flatMap(f => f.jobs).forEach(j => batch.set(j.item, Math.min(batch.get(j.item) ?? Infinity, j.cycle)));
+    const makers = new Map();
+    batch.forEach((_, name) => {
+        const terms = recipeTerms(name);
+        [terms.makes, terms.byproduct?.[0]].filter(Boolean).forEach(item => makers.set(item, [...(makers.get(item) || []), name]));
+    });
+    const known = new Map();
+    const first = (name, depth = 0) => {
+        if (depth > 8) return 0;
+        if (!known.has(name)) {
+            known.set(name, 0);
+            const waits = recipeTerms(name).takes
+                .map(([ingredient]) => makers.get(ingredient))
+                .filter(Boolean)
+                .map(list => Math.min(...list.map(m => first(m, depth + 1))));
+            known.set(name, Math.max(0, ...waits) + (batch.get(name) || 0));
+        }
+        return known.get(name);
+    };
+    return first;
+}
+
+function startLayoutSim(svg, flows, stock) {
+    stopLayoutSim();
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    document.getElementById('layout-sim').hidden = !svg || flows.length === 0 || reduce;
+    if (!svg || flows.length === 0) return;
+    const lines = [...svg.querySelectorAll('.layout-flow-line')];
+    const rings = [...svg.querySelectorAll('.layout-ring')];
+    if (reduce) {
+        lines.forEach(line => line.classList.add('live'));
+        rings.forEach(ring => ring.remove());
+        return;
+    }
+    const first = firstBatchTimes(flows);
+    const latest = Math.max(...flows.flatMap(f => f.jobs).map(j => first(j.item)));
+    const speed = Math.min(3600, Math.max(60, latest / SIM_BUILD_UP));
+    const units = flows.map((flow, k) => ({
+        flow,
+        jobs: flow.jobs.map(job => ({ ...job, terms: recipeTerms(job.item) })),
+        line: lines[k], ring: rings[k], fill: rings[k]?.querySelector('.ring-fill'),
+    }));
+    // Something no piece here makes, and no stock covers, is taken as always there, so a recipe
+    // using it isn't held up forever.
+    const made = new Set(units.flatMap(u => u.jobs).flatMap(j => [j.terms.makes, j.terms.byproduct?.[0]].filter(Boolean)));
+    const sim = { svg, units, speed, stock, made, layer: svg.querySelector('.layout-dots'), dots: [], frame: 0, visible: true };
+    layoutSim = sim;
+    document.getElementById('layout-clock').title = `Game time since everything was set up, at ${formatNumber(Math.round(speed))}× speed`;
+    // Only plays while the diagram is on screen.
+    sim.observer = new IntersectionObserver(([entry]) => {
+        sim.visible = entry.isIntersecting;
+        if (sim.visible && !sim.frame && layoutSim === sim) sim.frame = requestAnimationFrame(now => tickLayoutSim(sim, now));
+    });
+    sim.observer.observe(svg);
+    resetLayoutSim(sim);
+}
+
+function resetLayoutSim(sim) {
+    sim.game = 0;
+    sim.real = 0;
+    sim.last = null;
+    sim.store = new Map(sim.stock);
+    sim.units.forEach(unit => {
+        unit.jobs.forEach(job => { job.pace = 1; });
+        unit.job = null;
+        unit.until = null;
+        unit.free = 0;
+        unit.lastDot = -Infinity;
+        unit.line?.classList.remove('live');
+        showRing(unit, 0, false);
+    });
+    sim.dots.forEach(dot => dot.el.remove());
+    sim.dots = [];
+    showSimClock(0);
+    if (!sim.frame) sim.frame = requestAnimationFrame(now => tickLayoutSim(sim, now));
+}
+
+function stopLayoutSim() {
+    if (!layoutSim) return;
+    cancelAnimationFrame(layoutSim.frame);
+    layoutSim.observer?.disconnect();
+    layoutSim = null;
+}
+
+// Whether the Storage Unit has what `job` needs for a batch.
+function simHas(sim, job) {
+    return job.terms.takes.every(([item, n]) => !sim.made.has(item) && !sim.stock.has(item) || (sim.store.get(item) || 0) >= n);
+}
+
+// Whether `job` is due a batch by its pace. Pace may run a little over one, so a batch noticed at
+// the end of a step doesn't lose the time since.
+const simDue = job => job.pace >= 1 - 1e-9;
+
+// Starts the first job of `unit` that's due and has its materials, at game time `at`.
+function simStart(sim, unit, at) {
+    const job = unit.jobs.find(j => simDue(j) && simHas(sim, j));
+    if (!job) return;
+    job.terms.takes.forEach(([item, n]) => {
+        if (sim.made.has(item) || sim.stock.has(item)) sim.store.set(item, (sim.store.get(item) || 0) - n);
+    });
+    job.pace -= 1;
+    unit.job = job;
+    unit.started = at;
+    unit.until = at + job.cycle;
+}
+
+function stepLayoutSim(sim, dt) {
+    const from = sim.game;
+    sim.game += dt;
+    // Recipes wanting the same thing take turns at random.
+    const order = [...sim.units];
+    for (let i = order.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+    }
+    for (const unit of order) {
+        unit.jobs.forEach(job => { job.pace = Math.min(1 + job.rate * SIM_STEP, job.pace + job.rate * dt); });
+        // Each batch finished within the step is delivered then, and the next starts right away.
+        while (unit.until != null && unit.until <= sim.game) {
+            const { makes, byproduct, yield: amount } = unit.job.terms;
+            sim.store.set(makes, (sim.store.get(makes) || 0) + amount);
+            if (byproduct) sim.store.set(byproduct[0], (sim.store.get(byproduct[0]) || 0) + byproduct[1]);
+            deliver(sim, unit, (sim.game - unit.until) / sim.speed);
+            unit.free = unit.until;
+            unit.until = null;
+            unit.job = null;
+            simStart(sim, unit, unit.free);
+        }
+        if (unit.until == null) simStart(sim, unit, Math.max(from, unit.free));
+    }
+}
+
+function deliver(sim, unit, age) {
+    unit.line?.classList.add('live');
+    const walk = unit.flow.length / SIM_PACE;
+    // A line busier than the eye can follow shows only some of its dots.
+    if (age >= walk || sim.real - age - unit.lastDot < SIM_DOT_GAP) return;
+    unit.lastDot = sim.real - age;
+    const el = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+    el.setAttribute('r', '0.2');
+    el.setAttribute('class', 'layout-dot');
+    sim.layer.appendChild(el);
+    sim.dots.push({ el, flow: unit.flow, age });
+}
+
+function showRing(unit, progress, waiting) {
+    if (!unit.ring) return;
+    unit.fill.setAttribute('stroke-dasharray', `${progress.toFixed(3)} 1`);
+    unit.ring.classList.toggle('waiting', waiting);
+}
+
+function tickLayoutSim(sim, now) {
+    sim.frame = 0;
+    if (layoutSim !== sim || !sim.svg.isConnected) return;
+    // A long gap between frames (a hidden tab) isn't counted as time passing.
+    const dt = sim.last == null ? 0 : Math.min(now - sim.last, 100) / 1000;
+    sim.last = now;
+    const until = sim.game + dt * sim.speed;
+    while (sim.game < until - 1e-9) stepLayoutSim(sim, Math.min(SIM_STEP, until - sim.game));
+    sim.real += dt;
+    sim.units.forEach(unit => {
+        const busy = unit.until != null;
+        showRing(unit, busy ? Math.min(1, (sim.game - unit.started) / unit.job.cycle) : 0, !busy && unit.jobs.some(simDue));
+    });
+    sim.dots = sim.dots.filter(dot => {
+        dot.age += dt;
+        const along = (dot.age * SIM_PACE) / dot.flow.length;
+        if (along >= 1) {
+            dot.el.remove();
+            return false;
+        }
+        dot.el.setAttribute('cx', (dot.flow.x1 + (dot.flow.x2 - dot.flow.x1) * along).toFixed(2));
+        dot.el.setAttribute('cy', (dot.flow.y1 + (dot.flow.y2 - dot.flow.y1) * along).toFixed(2));
+        return true;
+    });
+    showSimClock(sim.game);
+    if (sim.visible) sim.frame = requestAnimationFrame(t => tickLayoutSim(sim, t));
+    else sim.last = null;
+}
+
+function showSimClock(seconds) {
+    const minutes = Math.floor(seconds / 60);
+    const days = Math.floor(minutes / 1440);
+    const hours = Math.floor(minutes / 60) % 24;
+    const text = `${days ? `${days}d ` : ''}${hours}h ${String(minutes % 60).padStart(2, '0')}m`;
+    const clock = document.getElementById('layout-clock');
+    if (clock.textContent !== text) clock.textContent = text;
+}
+
+// --- Progress card ---------------------------------------------------------------------
+// Under the button, every step of working out a plan in the order it runs, each with a spinner
+// while it runs and its time once done: the solves in the worker (see `exactPlanJson` in
+// worker.js), then the layout, the opportunities and the Minimum team.
+
+let progress = null;
+
+function startProgress(input, runId) {
+    const levelUp = !!input.level_up && planContext.levelUp && !planContext.ready && !planContext.unavailable;
+    const priorities = input.priorities || [];
+    // A level-up's solves (the soonest level-up, the most Home Coins at that pace, spare Bench
+    // and Kiln time) are one step, and every plan's last is its final solve and the re-check
+    // of it against every limit: the worker's steps map onto these (see `setStep`).
+    const steps = [
+        ...priorities.map(target => ({ key: `priority:${target}`, label: `Most ${priorityLabel(target, planContext.aniipod)}` })),
+        { key: 'plan', label: levelUp ? 'Fastest Level-Up' : priorities.length ? "Home Coins with What's Left" : 'Most Home Coins' },
+        { key: 'layout', label: 'Homeland Layout' },
+        { key: 'improve', label: 'Opportunities' },
+        { key: 'minimum', label: 'Minimum Team Plan' },
+    ];
+    progress = { runId, steps: steps.map(step => ({ ...step, state: 'pending' })) };
+    renderProgress();
+}
+
+// The worker's solves that make up the card's 'plan' step; it's done once the plan is checked.
+const PLAN_SOLVES = ['level_up', 'final', 'stock_up', 'check'];
+
+// Moves step `key` on: 'start', 'done', 'skip' or 'fail', with an optional note such as
+// "3 of 12", and for a solve, whether HiGHS proved its answer. The backup planner only appears
+// if the exact one couldn't run.
+function setStep(key, state, detail, proven) {
+    if (!progress || progress.runId !== planRunId) return;
+    if (PLAN_SOLVES.includes(key)) {
+        const plan = progress.steps.find(s => s.key === 'plan');
+        if (proven === false) plan.unproven = true;
+        if (state === 'start' && plan.state !== 'running') setStep('plan', 'start');
+        else if (state === 'done' && key === 'check') setStep('plan', 'done', undefined, !plan.unproven);
+        else renderProgress();
+        return;
+    }
+    let step = progress.steps.find(s => s.key === key);
+    if (!step && key === 'backup') {
+        step = { key, label: 'Backup Planner', state: 'pending' };
+        progress.steps.splice(progress.steps.findIndex(s => s.key === 'layout'), 0, step);
+    }
+    if (!step) return;
+    const now = performance.now();
+    if (state === 'start') {
+        if (step.state !== 'running') step.started = now;
+        step.state = 'running';
+    } else if (state === 'done' || state === 'fail') {
+        step.ms = step.started ? now - step.started : null;
+        step.state = state;
+    } else if (state === 'skip') {
+        step.state = 'skipped';
+    }
+    if (detail !== undefined) step.detail = detail;
+    if (proven !== undefined) step.proven = proven;
+    renderProgress();
+}
+
+// What "proven best" means, shown on hovering it.
+const PROVEN_MEANS = 'No plan the model allows does better. Some of its options, such as how plots can be arranged around an environment building, come from a shortlist rather than every possibility.';
+
+// Whether a solve proved its plan the best the model allows, or ran out of time first.
+function searchNote(proven) {
+    if (proven === undefined) return '';
+    return proven
+        ? `<span title="${PROVEN_MEANS}">proven best</span>`
+        : '<span title="The solver ran out of time before it could prove nothing does better.">best found in time</span>';
+}
+
+// Once the plan is back, any solve that never ran (a level-up out of reach skips the last one;
+// the backup planner skips them all) is marked skipped.
+function finishSolveSteps() {
+    if (!progress) return;
+    progress.steps
+        .filter(s => s.key === 'plan' || s.key.startsWith('priority:'))
+        .forEach(s => { if (s.state === 'pending' || s.state === 'running') s.state = 'skipped'; });
+    if (progress.steps.some(s => s.key === 'backup')) setStep('backup', 'done');
+    renderProgress();
+}
+
+function renderProgress() {
+    const card = document.getElementById('solve-progress');
+    if (!progress) {
+        card.style.display = 'none';
+        return;
+    }
+    card.style.display = 'block';
+    const icon = state => ({
+        running: '<span class="step-spinner" aria-label="Running"></span>',
+        done: '<span class="step-icon done" aria-label="Done">✓</span>',
+        fail: '<span class="step-icon fail" aria-label="Failed">✕</span>',
+        skipped: '<span class="step-icon skipped" aria-label="Skipped">–</span>',
+    }[state] || '<span class="step-icon pending" aria-label="Waiting">•</span>');
+    const time = ms => ms == null ? '' : ms < 1000 ? `${Math.max(1, Math.round(ms))} ms` : `${(ms / 1000).toFixed(1)} s`;
+    card.innerHTML = `<ol class="progress-steps">${progress.steps.map(step => {
+        const finished = step.state === 'done' || step.state === 'fail';
+        const note = [step.detail, finished ? searchNote(step.proven) : '', finished ? time(step.ms) : ''].filter(Boolean).join(' · ');
+        return `
+        <li class="progress-step ${step.state}">${icon(step.state)}<span class="step-label">${step.label}</span>
+            <span class="step-note">${note}</span></li>`;
+    }).join('')}</ol>`;
+}
+
+// --- My Aniimo -------------------------------------------------------------------------
+// The Aniimo the player actually has, card by card (see `Crew` in models.rs): each card's homeland
+// abilities with their levels, its four personalities (one from each pair) and how many are alike.
+// The plan shares their hours out, so one level-4 Earth Aniimo covers what it can and no more.
+
+let roster = [];
+// The Best plan's team, to start a roster from (see `renderAniimoSummary`).
+let lastBestTeam = null;
+
+function newRosterAniimo(abilities = {}, personalities = null) {
+    return { name: '', count: 1, abilities, personalities: personalities || PERSONALITY_PAIRS.map(pair => pair.names[0]) };
+}
+
+// Facilities whose Aniimo lives there: every Aniimo Materials facility.
+const RESIDENT_FACILITIES = new Set(FACILITIES.filter(f => f.category === 'Aniimo Materials').map(f => f.name));
+
+// The roster for the solver (see `JsRoster` in wasm.rs).
+function rosterPayload() {
+    return {
+        members: roster.map(a => ({ count: a.count, abilities: a.abilities, personalities: a.personalities })),
+        residents: [...RESIDENT_FACILITIES],
+        environment: ENVIRONMENT_BUILDING_ABILITY,
+        personalities: Object.fromEntries(FACILITIES.filter(f => f.personality).map(f => [f.name, f.personality])),
+    };
+}
+
+const escapeText = text => String(text).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// A card's name: what the player called it, else its abilities.
+function rosterLabel(aniimo, i) {
+    if (aniimo.name.trim()) return escapeText(aniimo.name.trim());
+    const abilities = Object.entries(aniimo.abilities).map(([ability, level]) => `${ability} ${level}`).join(', ');
+    return abilities || `Aniimo ${i + 1}`;
+}
+
+function renderRoster() {
+    const editor = document.getElementById('roster-editor');
+    const cards = roster.map((aniimo, i) => {
+        const abilities = Object.entries(aniimo.abilities).map(([ability, level]) => `
+            <span class="roster-ability">${abilityTag(ability)}<span class="tabs level-picker">${[1, 2, 3, 4].map(l =>
+                `<label><input type="radio" name="roster-${i}-${ability}" data-level="${i}|${ability}" value="${l}"${l === level ? ' checked' : ''}> ${l}</label>`).join('')}</span><button type="button" class="roster-x" data-drop="${i}|${ability}" aria-label="Remove ${ability}" title="Remove ${ability}">✕</button></span>`).join('');
+        const missing = ABILITIES.map(a => a.name).filter(name => !(name in aniimo.abilities));
+        const add = missing.length
+            ? `<select class="roster-add-ability" data-add="${i}" aria-label="Add an ability"><option value="">+ Ability</option>${missing.map(name => `<option>${name}</option>`).join('')}</select>`
+            : '';
+        const personalities = PERSONALITY_PAIRS.map((pair, p) => `<span class="tabs level-picker roster-pair" role="radiogroup" aria-label="${pair.names.join(' or ')}">${pair.names.map((name, k) =>
+            `<label title="${name}"><input type="radio" name="roster-${i}-pair-${p}" data-personality="${i}|${p}" value="${name}"${aniimo.personalities[p] === name ? ' checked' : ''}> ${pair.letters[k]}</label>`).join('')}</span>`).join('');
+        return `
+            <div class="roster-card">
+                <div class="roster-head">
+                    <input type="text" class="roster-name" data-name="${i}" value="${escapeText(aniimo.name)}" placeholder="Aniimo ${i + 1}" aria-label="Name">
+                    <span class="roster-count" title="How many you have that are alike"><button type="button" data-count="${i}|-1" aria-label="One fewer">−</button><span>×${aniimo.count}</span><button type="button" data-count="${i}|1" aria-label="One more">+</button></span>
+                    <button type="button" class="roster-x" data-remove="${i}" aria-label="Remove this Aniimo" title="Remove">✕</button>
+                </div>
+                <div class="roster-abilities">${abilities}${add}</div>
+                <div class="roster-personalities">${personalities}</div>
+            </div>`;
+    }).join('');
+    editor.innerHTML = `${cards || '<p class="hint small">No Aniimo yet. Add the ones you have, or start from the Best plan\'s team.</p>'}
+        <div class="roster-actions">
+            <button type="button" class="skip-add-btn" data-roster="add">+ Add Aniimo</button>
+            ${lastBestTeam?.length ? '<button type="button" class="skip-add-btn" data-roster="from-best">Start from the Best team</button>' : ''}
+        </div>`;
+}
+
+// When the roster can't make a plan: keeps the Aniimo card, and its editor, on screen so the
+// player can add to it.
+function showRosterShortfall() {
+    document.getElementById('error-message').style.display = 'none';
+    showSetupOnly();
+    const anyAble = roster.some(a => a.count > 0 && Object.keys(a.abilities).length);
+    // An empty roster's editor already says to add some.
+    document.getElementById('aniimo-collapsed-summary').textContent = anyAble ? 'No plan found with these Aniimo.' : '';
+}
+
+// Of the results, only the Aniimo card, emptied of the last plan's team: its setup may be what
+// to change.
+function showSetupOnly() {
+    const content = document.getElementById('results-content');
+    content.style.display = 'block';
+    content.classList.add('setup-only');
+    document.getElementById('aniimo-collapsed-summary').textContent = '';
+    document.getElementById('aniimo-summary').innerHTML = '';
+    document.getElementById('aniimo-abilities').innerHTML = '';
+    document.getElementById('aniimo-count').hidden = true;
+}
+
+// Plans again once the player stops changing the roster for a moment, not on every click.
+let rosterReplan = null;
+function rosterChanged(rerender = true) {
+    saveInputsToStorage();
+    if (rerender) renderRoster();
+    clearTimeout(rosterReplan);
+    rosterReplan = setTimeout(switchAniimoSetup, 700);
+}
+
+function attachRosterHandlers() {
+    const editor = document.getElementById('roster-editor');
+    editor.addEventListener('click', (e) => {
+        const button = e.target.closest('button');
+        if (!button) return;
+        const { count, remove, drop, roster: action } = button.dataset;
+        if (count) {
+            const [i, by] = count.split('|').map(Number);
+            roster[i].count = Math.max(1, roster[i].count + by);
+        } else if (remove) {
+            roster.splice(Number(remove), 1);
+        } else if (drop) {
+            const [i, ability] = drop.split('|');
+            delete roster[Number(i)].abilities[ability];
+        } else if (action === 'add') {
+            roster.push(newRosterAniimo());
+        } else if (action === 'from-best' && lastBestTeam) {
+            // Alike Aniimo share a card, with how many there are.
+            const cards = new Map();
+            lastBestTeam.forEach(g => {
+                const personalities = PERSONALITY_PAIRS.map(pair => pair.names.find(name => g.personalities?.has(name)) || pair.names[0]);
+                const key = `${g.ability}|${g.level}|${personalities.join()}`;
+                if (cards.has(key)) cards.get(key).count += g.count;
+                else cards.set(key, { ...newRosterAniimo({ [g.ability]: g.level }, personalities), count: g.count });
+            });
+            roster = [...cards.values()];
+        } else {
+            return;
+        }
+        rosterChanged();
+    });
+    editor.addEventListener('change', (e) => {
+        const { level, personality, add, name } = e.target.dataset;
+        if (level) {
+            const [i, ability] = level.split('|');
+            roster[Number(i)].abilities[ability] = Number(e.target.value);
+        } else if (personality) {
+            const [i, p] = personality.split('|').map(Number);
+            roster[i].personalities[p] = e.target.value;
+        } else if (add) {
+            if (!e.target.value) return;
+            roster[Number(add)].abilities[e.target.value] = 1;
+        } else if (name !== undefined) {
+            roster[Number(name)].name = e.target.value;
+            saveInputsToStorage();
+            return;
+        } else {
+            return;
+        }
+        rosterChanged();
+    });
+}
+
+// The Aniimo Team card for a roster plan: how busy each card's Aniimo are and where. A resident
+// facility keeps its Aniimo all day; environment buildings too (see `staffing`).
+function renderRosterSummary(plan) {
+    const busy = roster.map(() => 0);
+    const where = roster.map(() => new Map());
+    (plan.coin_items || []).forEach(step => {
+        if (step.crew == null || step.status !== 'producing' || !roster[step.crew]) return;
+        busy[step.crew] += RESIDENT_FACILITIES.has(step.facility) ? step.facility_count : (step.busy_units ?? step.facility_count);
+        const place = `${step.facility} (${prettyItem(step.item_name)})`;
+        where[step.crew].set(place, (where[step.crew].get(place) || 0) + step.facility_count);
+    });
+    (plan.staffing || []).forEach(([building, member, share]) => {
+        if (!roster[member]) return;
+        busy[member] += share;
+        where[member].set(building, (where[member].get(building) || 0) + share);
+    });
+    // The growing jobs (sowing, reaping and the like) take seconds a harvest, so they don't count
+    // as busy time, but someone has to do them: each goes to the least busy Aniimo able to.
+    const jobs = new Map();
+    (plan.coin_items || []).forEach(step => {
+        if (step.status !== 'producing' || !(step.facility === 'Farmland' || step.facility === 'Woodland')) return;
+        (recipeIndex.find(r => r.name === step.item_name)?.jobs || []).forEach(([job, ability, level]) => {
+            jobs.set(`${job}|${ability}|${level}|${step.facility}`, { job, ability, level, facility: step.facility });
+        });
+    });
+    jobs.forEach(({ job, ability, level, facility }) => {
+        const able = roster.map((a, i) => i).filter(i => (roster[i].abilities[ability] || 0) >= level);
+        if (!able.length) return;
+        const pick = able.reduce((a, b) => (busy[b] / roster[b].count < busy[a] / roster[a].count ? b : a));
+        const place = `${job} on ${facility}`;
+        if (!where[pick].has(place)) where[pick].set(place, 1);
+    });
+    const have = roster.reduce((sum, a) => sum + a.count, 0);
+    const working = roster.reduce((sum, a, i) => sum + Math.min(a.count, Math.ceil(busy[i] - 1e-6)), 0);
+    const rows = roster.map((aniimo, i) => {
+        const places = [...where[i]].map(([place, n]) => Number.isInteger(n) && n > 1 ? `${place} ×${n}` : place).join(', ');
+        const abilities = Object.entries(aniimo.abilities).map(([ability, level]) => `${abilityTag(ability)} ${level}`).join(' ');
+        const letters = aniimo.personalities.map(personalityLetter).join('');
+        return `<tr><td data-label="Aniimo">${rosterLabel(aniimo, i)}<div class="hint small">${abilities} · ${letters}</div></td><td data-label="How many">${aniimo.count}</td><td data-label="Busy on average">${busy[i].toFixed(1)}</td><td data-label="Where">${places || '<span class="hint small">idle</span>'}</td></tr>`;
+    }).join('');
+    document.getElementById('aniimo-summary').innerHTML = roster.length
+        ? `<table class="aniimo-table"><thead><tr><th>Aniimo</th><th>How many</th><th>Busy on average</th><th>Where</th></tr></thead><tbody>${rows}</tbody></table>
+           <p class="hint small">${working} of your ${have} Aniimo have work in this plan.</p>`
+        : '<p class="hint">Add the Aniimo you have under My Aniimo to plan with them.</p>';
+    document.getElementById('aniimo-collapsed-summary').textContent = '';
+    document.getElementById('aniimo-abilities').innerHTML = '';
+    const count = document.getElementById('aniimo-count');
+    document.getElementById('aniimo-count-have').textContent = working;
+    const of = document.getElementById('aniimo-count-of');
+    of.textContent = have;
+    of.hidden = false;
+    count.hidden = false;
+    count.classList.remove('over');
+    count.title = `${working} of your ${have} Aniimo have work in this plan`;
+}
+
+// --- Season ----------------------------------------------------------------------------
+// The Harvest Moon Festival (see `SEASON`): on the page from RV 10, or always in Advanced mode,
+// where there's no RV level to go by. While it's on, plans may use the season's recipes, bar Recipe
+// Notes the player hasn't unlocked, and say how much Moonray Wheat their seeds use.
+
+function seasonAvailable() {
+    return !isSimpleMode() || selectedHomeLevel() >= SEASON.minHomeLevel;
+}
+
+function seasonActive() {
+    return seasonAvailable() && document.getElementById('season-on').checked;
+}
+
+function renderSeason() {
+    document.getElementById('season-section').hidden = !seasonAvailable();
+    document.getElementById('season-config').hidden = !seasonActive();
+    document.getElementById('season-notes').innerHTML = SEASON.recipeNotes.map(r => `
+        <label class="special-option">
+            <input type="checkbox" data-special="${r.name}"${unlockedSpecial.has(r.name) ? ' checked' : ''}>
+            <span>${prettyItem(r.name)}</span>
+        </label>`).join('');
+}
+
+function attachSeasonHandlers() {
+    document.getElementById('season-on').addEventListener('change', renderStrategy);
+    document.getElementById('season-notes').addEventListener('change', (e) => {
+        const name = e.target.dataset.special;
+        if (!name) return;
+        if (e.target.checked) unlockedSpecial.add(name); else unlockedSpecial.delete(name);
+        saveInputsToStorage();
+    });
+}
+
 // Every recipe plans may not use: the player's skips and any special recipe not unlocked.
 function excludedRecipes() {
-    const locked = SPECIAL_RECIPES.map(r => r.name).filter(name => !unlockedSpecial.has(name));
+    const locked = [...SPECIAL_RECIPES, ...SEASON.recipeNotes].map(r => r.name).filter(name => !unlockedSpecial.has(name));
     // Going for Aniipods means the best tier only; the others would be cheaper but catch worse.
     const best = wantsAniipods() ? bestAniipod() : null;
     const lesser = best ? ANIIPOD_TIERS.filter(name => name !== best) : [];
@@ -592,7 +1931,7 @@ function recipeLabel(recipe) {
 async function loadRecipeIndex() {
     try {
         recipeIndex = JSON.parse(await callWorker('get_all_items'))
-            .map(r => ({ name: r.name, facility: r.facility, cost: r.cost || 0 }))
+            .map(r => ({ name: r.name, facility: r.facility, cost: r.cost || 0, seasonSeedCost: r.season_seed_cost || 0, environment: r.environment || null, jobs: r.jobs || [], ingredients: r.raw_materials || [], amounts: r.required_amount || [], yieldAmount: r.yield_amount || 1, byproduct: r.byproduct_item || null, byproductAmount: r.byproduct?.[1] || 0, turns: r.sell_currency === 'none' }))
             .sort((a, b) => a.facility.localeCompare(b.facility) || a.name.localeCompare(b.name));
         document.getElementById('skip-options').innerHTML =
             recipeIndex.map(r => `<option value="${recipeLabel(r)}"></option>`).join('');
@@ -605,7 +1944,8 @@ async function loadRecipeIndex() {
 // The Recipes section's badge, e.g. " (2 on, 3 skipped)", so what's set shows while it's closed.
 function renderRecipeCount() {
     const parts = [];
-    if (unlockedSpecial.size) parts.push(`${unlockedSpecial.size} on`);
+    const on = [...unlockedSpecial].filter(name => SPECIAL_NAMES.has(name)).length;
+    if (on) parts.push(`${on} on`);
     if (skippedRecipes.size) parts.push(`${skippedRecipes.size} skipped`);
     document.getElementById('recipe-count').textContent = parts.length ? ` (${parts.join(', ')})` : '';
 }
@@ -617,7 +1957,7 @@ function renderSkippedRecipes() {
         .sort((a, b) => prettyItem(a).localeCompare(prettyItem(b)))
         .map(name => {
             const facility = facilityOf(name);
-            return `<span class="skip-chip">${prettyItem(name)}${facility ? ` <span class="skip-chip-facility">${facility}</span>` : ''}<button type="button" data-unskip="${name}" aria-label="Stop skipping ${prettyItem(name)}" title="Stop skipping">✕</button></span>`;
+            return `<span class="skip-chip">${escapeText(prettyItem(name))}${facility ? ` <span class="skip-chip-facility">${facility}</span>` : ''}<button type="button" data-unskip="${escapeText(name)}" aria-label="Stop skipping ${escapeText(prettyItem(name))}" title="Stop skipping">✕</button></span>`;
         }).join('');
 }
 
@@ -678,19 +2018,89 @@ function attachSkipHandlers() {
 // What the player has toward a level-up, by item name ('coins' for coins).
 let levelUpStock = {};
 
-// The highest ability level an Aniimo reaches; mirrors `MAX_ANIIMO_LEVEL` in models.rs.
+// The highest ability level an Aniimo reaches, and the abilities that stop short of it; mirrors
+// `MAX_ANIIMO_LEVEL` and `ABILITY_DEFAULTS` in models.rs.
 const MAX_ANIIMO_LEVEL = 4;
+// Abilities to assume less of unless the player says otherwise: there is no level-4 Perfumery
+// Aniimo in the game yet, so one isn't assumed, but a player who has one can say so.
+const ABILITY_DEFAULTS = { Perfumery: 3 };
+const defaultLevelFor = ability => ABILITY_DEFAULTS[ability] ?? MAX_ANIIMO_LEVEL;
 
-// The best ability level to plan for. Level-4 Aniimo take some getting, so a player who hasn't
-// got one plans for level 3 instead (see `aniimo_setup_from` in wasm.rs for the names).
-function bestAniimoLevel() {
-    return document.getElementById('has-level-four')?.checked === false ? 3 : MAX_ANIIMO_LEVEL;
+// Which abilities a level matters for: the ones a facility works with, since a crop's grow time
+// is fixed and an environment building's Aniimo level isn't known to change anything. Largest
+// first so the list reads in the game's ability order.
+function levelledAbilities() {
+    const used = new Set(FACILITIES.map(f => f.ability).filter(Boolean));
+    return ABILITIES.map(a => a.name).filter(name => used.has(name));
+}
+
+// The ability levels the player says they have, for the plan input. An ability left out is taken
+// as level 4; the game's own ceiling applies on top (see `max_level_for` in models.rs).
+let aniimoLevels = {};
+
+// What to send the solver for `setup`: the per-ability levels, or the player's roster (see
+// `aniimo_setup_from` and `JsRoster` in wasm.rs).
+function aniimoInput(setup) {
+    if (setup.startsWith('roster')) return { aniimo: 'roster', roster: rosterPayload(), aniimo_levels: {} };
+    const levels = {};
+    levelledAbilities().forEach(ability => { levels[ability] = bestAniimoLevel(ability); });
+    return { aniimo: setup.split(':')[0], aniimo_levels: levels };
+}
+
+function bestAniimoLevel(ability) {
+    return aniimoLevels[ability] ?? defaultLevelFor(ability);
+}
+
+
+// Which of the three setups is on screen.
+function selectedSetupTab() {
+    if (document.getElementById('aniimo-minimum')?.checked) return 'minimum';
+    if (document.getElementById('aniimo-custom')?.checked) return 'custom';
+    return 'best';
+}
+
+// A row of level buttons, one picked, in the same segmented style as the tabs above. A level the
+// game isn't known to have is marked, and asks before it's taken.
+function levelPicker(group, chosen, ability, label) {
+    const usual = defaultLevelFor(ability);
+    return `<span class="tabs level-picker" role="radiogroup" aria-label="${label}">${[1, 2, 3, 4]
+        .map(level => {
+            const unheardOf = level > usual;
+            const mark = unheardOf ? ` class="unheard-of" title="No level-${level} ${ability} Aniimo is known in the game yet"` : '';
+            const confirm = unheardOf ? ` data-confirm="${ability}"` : '';
+            return `<label${mark}><input type="radio" name="${group}" value="${level}"${chosen === level ? ' checked' : ''}${confirm}> ${level}</label>`;
+        })
+        .join('')}</span>`;
+}
+
+// Best: the level the player has of each ability a level matters for.
+function renderAbilityLevels() {
+    const list = document.getElementById('ability-levels');
+    if (!list) return;
+    list.innerHTML = levelledAbilities().map(ability => {
+        return `<div class="ability-level">${abilityTag(ability)}${levelPicker(`level-${ability}`, bestAniimoLevel(ability), ability, `${ability} level`)}</div>`;
+    }).join('');
+}
+
+// Shows the settings for whichever setup is picked, and works that plan out.
+function showAniimoSetup() {
+    const tab = selectedSetupTab();
+    document.getElementById('aniimo-setup-panel').hidden = tab === 'minimum';
+    document.getElementById('ability-levels').hidden = tab !== 'best';
+    document.getElementById('roster-editor').hidden = tab !== 'custom';
+    document.getElementById('aniimo-setup-hint').textContent = tab === 'custom'
+        ? 'The Aniimo you have. The plan shares their hours out, so it only counts on what they can do.'
+        : 'The best Aniimo you have of each ability.';
+    if (tab === 'best') renderAbilityLevels();
+    if (tab === 'custom') renderRoster();
+    switchAniimoSetup();
 }
 
 const ITEM_NAMES = {
-    coins: 'Coins',
+    coins: 'Home Coins',
     wood_block: 'Wood Blocks',
     mineral_sand: 'Mineral Sand',
+    umbral_sweet_and_spicy_sauce: 'Umbral Sweet and Spicy Sauce',
     coarse_sifted_ore: 'Coarse-Sifted Ore',
     river_washed_stones: 'River-Washed Stones',
     premium_river_washed_stones: 'Premium River-Washed Stones',
@@ -707,11 +2117,12 @@ function isLevelUpStrategy() {
 // of each ticked one as the ones above it allow, then earns coins with what's left (see
 // `JsPlanInput::priorities` in wasm.rs).
 const PRIORITY_TARGETS = [
-    { id: 'coins', label: 'Coins' },
+    { id: 'coins', label: 'Home Coins' },
     { id: 'aniimo_exp', label: 'Aniimo EXP' },
     { id: 'aniipods', label: 'Aniipods' },
     { id: 'Wood Blocks', label: 'Wood Blocks' },
     { id: 'Mineral Sand', label: 'Mineral Sand' },
+    { id: 'season_points', label: SEASON.points, season: true },
 ];
 
 // Drawn arrows rather than the ↑/↓ characters, which some systems render as colored emoji.
@@ -724,9 +2135,15 @@ function isPriorityStrategy() {
     return document.getElementById('strategy-priorities').checked;
 }
 
+// The priorities on the page: season points only while the season is on.
+function shownPriorities() {
+    const season = seasonActive();
+    return priorityOrder.filter(p => season || !PRIORITY_TARGETS.find(t => t.id === p.target)?.season);
+}
+
 // The ticked priorities, best first; none for the level-up strategy.
 function activePriorities() {
-    return isPriorityStrategy() ? priorityOrder.filter(p => p.on).map(p => p.target) : [];
+    return isPriorityStrategy() ? shownPriorities().filter(p => p.on).map(p => p.target) : [];
 }
 
 function wantsAniipods() {
@@ -741,13 +2158,18 @@ function priorityLabel(target, aniipod = bestAniipod()) {
 
 function renderPriorities() {
     const best = bestAniipod();
-    document.getElementById('priority-list').innerHTML = priorityOrder.map((p, i) => {
+    const shown = shownPriorities();
+    document.getElementById('priority-list').innerHTML = shown.map((p, at) => {
+        // Indices into `priorityOrder`, which also holds any priority that isn't shown.
+        const i = priorityOrder.indexOf(p);
+        const above = at > 0 ? priorityOrder.indexOf(shown[at - 1]) : -1;
+        const below = at < shown.length - 1 ? priorityOrder.indexOf(shown[at + 1]) : -1;
         const label = priorityLabel(p.target, best);
         const note = p.target === 'aniipods' && !best ? ' <span class="hint small">(no Aniipod Maker yet)</span>' : '';
         return `
         <li class="priority${p.on ? '' : ' off'}" draggable="true" data-index="${i}">
             <span class="drag-handle" aria-hidden="true">⋮⋮</span>
-            <span class="priority-rank">${p.on ? priorityOrder.slice(0, i + 1).filter(q => q.on).length : ''}</span>
+            <span class="priority-rank">${p.on ? shown.slice(0, at + 1).filter(q => q.on).length : ''}</span>
             <span class="priority-name">${label}${note}</span>
             <label class="priority-switch" title="${p.on ? 'On: the plan goes for this' : 'Off: the plan ignores this'}">
                 <input type="checkbox" role="switch" data-toggle="${i}" aria-label="${label}"${p.on ? ' checked' : ''}>
@@ -755,8 +2177,8 @@ function renderPriorities() {
                 <span class="switch-text">${p.on ? 'On' : 'Off'}</span>
             </label>
             <span class="priority-move">
-                <button type="button" data-move="${i}" data-by="-1" aria-label="Move ${label} up"${i === 0 ? ' disabled' : ''}>${ARROW_UP}</button>
-                <button type="button" data-move="${i}" data-by="1" aria-label="Move ${label} down"${i === priorityOrder.length - 1 ? ' disabled' : ''}>${ARROW_DOWN}</button>
+                <button type="button" data-move="${i}" data-to="${above}" data-by="-1" aria-label="Move ${label} up"${above < 0 ? ' disabled' : ''}>${ARROW_UP}</button>
+                <button type="button" data-move="${i}" data-to="${below}" data-by="1" aria-label="Move ${label} down"${below < 0 ? ' disabled' : ''}>${ARROW_DOWN}</button>
             </span>
         </li>`;
     }).join('');
@@ -782,9 +2204,9 @@ function attachPriorityHandlers() {
     list.addEventListener('click', (e) => {
         const button = e.target.closest('[data-move]');
         if (!button) return;
-        const from = Number(button.dataset.move);
-        movePriority(from, from + Number(button.dataset.by));
-        list.querySelector(`[data-move="${from + Number(button.dataset.by)}"][data-by="${button.dataset.by}"]`)?.focus();
+        const to = Number(button.dataset.to);
+        movePriority(Number(button.dataset.move), to);
+        list.querySelector(`[data-move="${to}"][data-by="${button.dataset.by}"]`)?.focus();
     });
     let dragFrom = null;
     list.addEventListener('dragstart', (e) => {
@@ -864,6 +2286,7 @@ function populateLevelUpTargets() {
 }
 
 function renderStrategy() {
+    renderSeason();
     const levelUp = isLevelUpStrategy();
     document.getElementById('level-up-config').style.display = levelUp ? 'block' : 'none';
     document.getElementById('priorities-config').style.display = levelUp ? 'none' : 'block';
@@ -879,7 +2302,7 @@ function renderStrategy() {
     const stockDetails = document.getElementById('level-up-stock');
     const unavailable = levelUpUnavailable();
     if (unavailable) {
-        costEl.innerHTML = `<p class="level-up-note">${unavailable} Plans will go for the most coins.</p>`;
+        costEl.innerHTML = `<p class="level-up-note">${unavailable} Plans will go for the most Home Coins.</p>`;
         stockDetails.style.display = 'none';
         return;
     }
@@ -899,7 +2322,10 @@ function renderStrategy() {
 function attachStrategyHandlers() {
     document.getElementById('strategy-level-up').addEventListener('change', renderStrategy);
     document.getElementById('strategy-priorities').addEventListener('change', renderStrategy);
-    document.getElementById('level-up-target').addEventListener('change', renderStrategy);
+    document.getElementById('level-up-target').addEventListener('change', () => {
+        levelUpTargetChosen = true;
+        renderStrategy();
+    });
     const grid = document.getElementById('level-up-stock-grid');
     grid.addEventListener('input', (e) => {
         const name = e.target.dataset.stock;
@@ -965,12 +2391,12 @@ function renderLevelUp(plan) {
     const report = plan.level_up;
     if (context.unavailable) {
         time.textContent = '-';
-        lines.innerHTML = `<p class="level-up-note">${context.unavailable} This plan is for the most coins.</p>`;
+        lines.innerHTML = `<p class="level-up-note">${context.unavailable} This plan is for the most Home Coins.</p>`;
         return;
     }
     if (context.ready) {
         time.textContent = 'Ready now';
-        lines.innerHTML = `<p class="level-up-note">You already have everything it costs. This plan is for the most coins.</p>`;
+        lines.innerHTML = `<p class="level-up-note">You already have everything it costs. This plan is for the most Home Coins.</p>`;
         return;
     }
     if (!report) {
@@ -978,7 +2404,7 @@ function renderLevelUp(plan) {
             ? `These facilities can't make everything it costs.`
             : `The level-up couldn't be planned.`;
         time.textContent = '-';
-        lines.innerHTML = `<p class="level-up-note">${why} This plan is for the most coins.</p>`;
+        lines.innerHTML = `<p class="level-up-note">${why} This plan is for the most Home Coins.</p>`;
         return;
     }
     time.textContent = `in ${formatDuration(report.seconds)}`;
@@ -1002,7 +2428,7 @@ function renderLevelUp(plan) {
         .map(r => ({ name: r.name, spare: Math.floor(r.have + r.per_second * report.seconds - r.need) }))
         .concat((report.leftovers || []).map(([name, amount]) => ({ name, spare: Math.floor(amount) })))
         .filter(r => r.spare >= 1)
-        .map(r => `${formatNumber(r.spare)} ${r.name === 'coins' ? 'coins' : ITEM_NAMES[r.name] || prettyItem(r.name)}`);
+        .map(r => `${formatNumber(r.spare)} ${r.name === 'coins' ? 'Home Coins' : ITEM_NAMES[r.name] || prettyItem(r.name)}`);
     const coinsNote = surplus.length
         ? `<p class="level-up-coins"><span>Surplus:</span> <strong>${surplus.join(', ')}</strong></p>`
         : '';
@@ -1029,10 +2455,12 @@ function renderSeedTable(plan) {
         .filter(s => (s.facility === 'Farmland' || s.facility === 'Woodland') && s.status === 'producing' && s.cycle_time > 0)
         .map(s => {
             const perSecond = s.facility_count / s.cycle_time;
-            const cost = recipeIndex.find(r => r.name === s.item_name)?.cost || 0;
+            const recipe = recipeIndex.find(r => r.name === s.item_name);
+            const cost = recipe?.cost || 0;
             // Whole seeds when counting to the level-up.
             const seeds = levelUp ? Math.ceil(perSecond * multiplier) : perSecond * multiplier;
-            return { name: s.item_name, facility: s.facility, plots: s.facility_count, seeds, cost: seeds * cost };
+            const wheat = seeds * (recipe?.seasonSeedCost || 0);
+            return { name: s.item_name, facility: s.facility, plots: s.facility_count, seeds, cost: seeds * cost, wheat };
         })
         .sort((a, b) => b.seeds - a.seeds);
     if (rows.length === 0) {
@@ -1041,21 +2469,26 @@ function renderSeedTable(plan) {
     }
     const amount = formatRate;
     const totalCost = rows.reduce((sum, r) => sum + r.cost, 0);
+    const totalWheat = rows.reduce((sum, r) => sum + r.wheat, 0);
+    const totals = [
+        totalCost > 0 ? `${amount(totalCost)} Home Coins` : '',
+        totalWheat > 0 ? `${amount(totalWheat)} ${SEASON.currency}` : '',
+    ].filter(Boolean).join(' + ');
     card.style.display = 'block';
     const per = levelUp
         ? `until RV ${planContext.target}`
         : { second: 'per second', minute: 'per minute', hour: 'per hour', day: 'per day' }[unit] || 'per second';
-    document.getElementById('seed-card-unit').textContent = 'One seed per planting, for every Farmland and Woodland crop in the plan.';
+    document.getElementById('seed-card-unit').textContent = `Seeds ${per}: one per planting, for every Farmland and Woodland crop in the plan.`;
     el.innerHTML = `
         <table>
-            <thead><tr><th>Crop</th><th>Plots</th><th>Seeds ${per}</th><th>Cost ${per}</th></tr></thead>
+            <thead><tr><th>Crop</th><th>Plots</th><th>Seeds</th><th>Cost</th></tr></thead>
             <tbody>${rows.map(r => `<tr>
                 <td>${prettyItem(r.name)}</td>
                 <td>${r.plots}</td>
                 <td>${amount(r.seeds)}</td>
-                <td>${r.cost > 0 ? `${amount(r.cost)} coins` : 'free'}</td>
+                <td>${r.wheat > 0 ? `${amount(r.wheat)} ${SEASON.currency}` : r.cost > 0 ? `${amount(r.cost)} Home Coins` : 'free'}</td>
             </tr>`).join('')}</tbody>
-            ${rows.length > 1 && totalCost > 0 ? `<tfoot><tr><td colspan="3">Total</td><td>${amount(totalCost)} coins</td></tr></tfoot>` : ''}
+            ${rows.length > 1 && totals ? `<tfoot><tr><td colspan="3">Total</td><td>${totals}</td></tr></tfoot>` : ''}
         </table>`;
 }
 
@@ -1105,6 +2538,7 @@ function getPlanInputValues() {
             prioritize_byproducts: false,
             level_up: levelUpInput(),
             exclude: excludedRecipes(),
+            season: seasonActive(),
             facilities,
             modules
         };
@@ -1131,6 +2565,7 @@ function getPlanInputValues() {
         prioritize_byproducts: false,
         level_up: levelUpInput(),
         exclude: excludedRecipes(),
+        season: seasonActive(),
         facilities,
         modules
     };
@@ -1205,7 +2640,7 @@ function renderGoalTargets(plan) {
 }
 
 function goalName(row) {
-    return row.target === 'coins' ? 'Coins' : row.label;
+    return row.target === 'coins' ? 'Home Coins' : row.label;
 }
 
 // Renders the item-level production breakdown from `goalResult.products`; one row per income
@@ -1229,7 +2664,12 @@ function renderProductBreakdown(goalResult) {
 
     const unit = document.getElementById('rate-unit').value;
     const { multiplier, suffix } = RATE_UNIT_SECONDS[unit] || RATE_UNIT_SECONDS.second;
-    document.getElementById('product-breakdown-rate-header').textContent = `Profit${suffix}`;
+    document.getElementById('product-breakdown-rate-header').innerHTML = `Profit <span class="th-unit">Home Coins${suffix}</span>`;
+    // During the season, what each item counts toward the season's points.
+    const season = lastPlan?.season_points != null;
+    const pointsEach = new Map((lastPlan?.income_streams || []).map(s => [s.item_name, s.points || 0]));
+    document.getElementById('product-breakdown-points-header').hidden = !season;
+    const pointsCell = amount => season ? `<td>${amount > 0 ? formatNumber(amount) : '&mdash;'}</td>` : '';
 
     tbody.innerHTML = '';
     products.forEach(p => {
@@ -1250,6 +2690,7 @@ function renderProductBreakdown(goalResult) {
             <td>${wholeAmount.toLocaleString()}</td>
             <td>${formatRate(p.rate_per_second * multiplier)}</td>
             <td>${formatNumber(worth)}</td>
+            ${pointsCell(wholeAmount * (pointsEach.get(p.item_name) || 0))}
         `;
         tbody.appendChild(row);
     });
@@ -1263,6 +2704,7 @@ function renderProductBreakdown(goalResult) {
             <td>${Math.floor(amount).toLocaleString()}</td>
             <td>&mdash;</td>
             <td>not sold</td>
+            ${pointsCell(0)}
         `;
         tbody.appendChild(row);
     });
@@ -1417,17 +2859,6 @@ function listOf(items) {
     return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 }
 
-// Where to put the second building. The solver's offset runs corner to corner, so for two 2x2
-// buildings in a row the clear space between them is two tiles less; a diagonal one is easier to
-// follow as the corner position itself, which is also what the diagram draws.
-function gapText(dx, dy = 0) {
-    const tiles = n => `${n} tile${n === 1 ? '' : 's'}`;
-    if (dy === 0) {
-        const between = dx - 2;
-        return between <= 0 ? 'Side by side, touching.' : `In a row, ${tiles(between)} between them.`;
-    }
-    return `Corner to corner, the second sits ${tiles(dx)} along and ${tiles(dy)} up from the first.`;
-}
 
 
 // A growing environment named in its own colour.
@@ -1462,6 +2893,10 @@ function aniimoNeeds(g) {
 // frees its Aniimo), rounded up; facilities with a resident Aniimo (Sandcastle and the like) are
 // always busy, so they count one each.
 function renderAniimoSummary(plan) {
+    if (selectedSetupTab() === 'custom') {
+        renderRosterSummary(plan);
+        return;
+    }
     const container = document.getElementById('aniimo-summary');
     const groups = new Map();
     (plan.coin_items || []).forEach(step => {
@@ -1522,6 +2957,8 @@ function renderAniimoSummary(plan) {
     if (groups.size === 0) {
         container.innerHTML = '<p class="hint">Nothing in this plan needs an Aniimo.</p>';
         collapsedSummary.textContent = 'No Aniimo needed.';
+        const count = document.getElementById('aniimo-count');
+        if (count) count.hidden = true;
         document.getElementById('aniimo-abilities').innerHTML = '';
         return;
     }
@@ -1566,6 +3003,7 @@ function renderAniimoSummary(plan) {
     };
     const homelandHolds = isSimpleMode() ? ANIIMO_MAX[selectedHomeLevel() - 1] : null;
     const { kept, total: assigned } = assign();
+    if (selectedSetupTab() === 'best') lastBestTeam = kept;
     let total = assigned - kept.reduce((sum, g) => sum + g.count, 0); // the Hauling row
     const rows = kept
         .sort((a, b) => a.label.localeCompare(b.label))
@@ -1577,18 +3015,25 @@ function renderAniimoSummary(plan) {
         .join('');
     const haulingRow = `<tr><td data-label="Aniimo">${abilityTag('Hauling')} any level</td><td data-label="How many">1+</td><td data-label="Busy on average">?</td><td data-label="Where">Carries produce to storage. How much work this is isn't known yet; add more if produce piles up.</td></tr>`;
 
-    let capNote = '';
+    // The count above says how many; this is only said when it's more than the homeland holds.
     const cap = homelandHolds;
-    if (cap && total > cap) {
-        capNote = `<p class="hint small">That's ${total} Aniimo, more than the ${cap} an RV level ${selectedHomeLevel()} homeland holds.</p>`;
-    } else if (cap) {
-        capNote = `<p class="hint small">That's ${total} Aniimo; an RV level ${selectedHomeLevel()} homeland holds ${cap}.</p>`;
-    } else {
-        capNote = `<p class="hint small">That's ${total} Aniimo.</p>`;
+    const capNote = cap && total > cap
+        ? `<p class="hint small">That's ${total} Aniimo, more than the ${cap} an RV level ${selectedHomeLevel()} homeland holds.</p>`
+        : '';
+    const have = document.getElementById('aniimo-count-have');
+    const of = document.getElementById('aniimo-count-of');
+    const count = document.getElementById('aniimo-count');
+    if (have && of && count) {
+        have.textContent = total;
+        of.textContent = cap ?? '';
+        of.hidden = !cap;
+        count.hidden = false;
+        count.classList.toggle('over', !!cap && total > cap);
+        count.title = cap
+            ? `${total} Aniimo for this plan; an RV level ${selectedHomeLevel()} homeland holds ${cap}`
+            : `${total} Aniimo for this plan`;
     }
-    collapsedSummary.textContent = cap
-        ? `${total} Aniimo · your homeland holds ${cap}${total > cap ? ' (too many; see the list)' : ''}`
-        : `${total} Aniimo`;
+    collapsedSummary.textContent = '';
     // How many of each ability the plan needs, in the game's order, like its Abilities screen.
     const needed = new Map(ABILITIES.map(a => [a.name, 0]));
     kept.forEach(g => needed.set(g.ability, (needed.get(g.ability) || 0) + g.count));
@@ -1883,11 +3328,10 @@ function renderEnvironmentDiagram(layout, mode, building, rows = [], unit = null
     const rects = assigned.map(p => {
         const color = ENVIRONMENT_FACILITY_COLORS[p.facility] || '#888888';
         const size = p.size - inset * 2;
-        const label = p.crop ? `${p.facility}: ${prettyItem(p.crop)}` : p.facility;
         const initials = numbered && p.crop
             ? `<text x="${p.x + p.size / 2}" y="${p.y + p.size / 2}" font-size="${Math.min(0.9, p.size * 0.4)}">${numberOf(`${p.facility}|${p.crop}`)}</text>`
             : '';
-        return `<g class="env-plot"><title>${label}</title>
+        return `<g class="env-plot" ${tipAttrs(p.facility, { detail: p.crop ? prettyItem(p.crop) : '', color })}>
             <rect x="${p.x + inset}" y="${p.y + inset}" width="${size}" height="${size}" rx="0.25" fill="${color}" fill-opacity="0.85" stroke="${color}" stroke-width="0.06" />${initials}</g>`;
     }).join('');
 
@@ -1945,12 +3389,12 @@ function renderEnvironmentDiagram(layout, mode, building, rows = [], unit = null
                       stroke="${tintOf(modes[0])}" stroke-opacity="0.55" stroke-width="0.07" />
                     <rect x="${partnerMin.x}" y="${partnerMin.y}" width="${coverageSize}" height="${coverageSize}" fill="none"
                       stroke="${tintOf(modes[1])}" stroke-opacity="0.55" stroke-width="0.07" />` : ''}
-                <g class="env-building"><title>${building} (${modes ? modes[0] : mode})</title>
+                <g class="env-building" ${tipAttrs(building, { detail: modes ? modes[0] : mode, color: modes ? tintOf(modes[0]) : tint })}>
                     <rect x="0.05" y="0.05" width="${buildingSize - 0.1}" height="${buildingSize - 0.1}" rx="0.3"
                           fill="${modes ? tintOf(modes[0]) : tint}" stroke="currentColor" stroke-opacity="0.6" stroke-width="0.08" />
                     ${environmentBuildingIcon(building, modes ? modes[0] : mode, buildingCenter, buildingCenter)}
                 </g>
-                ${unit && unit.partner ? `<g class="env-building"><title>${unit.partner[0]} (${modes ? modes[1] : mode})</title>
+                ${unit && unit.partner ? `<g class="env-building" ${tipAttrs(unit.partner[0], { detail: modes ? modes[1] : mode, color: tintOf(modes ? modes[1] : mode) })}>
                     <rect x="${dx + 0.05}" y="${dy + 0.05}" width="${partnerSize - 0.1}" height="${partnerSize - 0.1}" rx="0.3"
                           fill="${modes ? tintOf(modes[1]) : tint}" stroke="currentColor" stroke-opacity="0.6" stroke-width="0.08" />
                     ${environmentBuildingIcon(unit.partner[0], modes ? modes[1] : mode, dx + partnerCenter, dy + partnerCenter)}
@@ -2017,7 +3461,6 @@ function renderFacilityPlan(plan) {
         return `
             <div class="facility-category">
                 <h4 class="facility-category-title">${unit.building} ${modeTag(modes[0])}<span class="env-head-sep">|</span>${unit.partner[0]} ${modeTag(modes[1])}${middle ? `<span class="env-head-sep">|</span>Overlap ${modeTag(middle)}` : ''}</h4>
-                <p class="hint small">${gapText(unit.partner[1], unit.partner[2])}</p>
                 <div class="env-unit">
                     ${renderEnvironmentDiagram(zones.flatMap(z => z.layout), zones[0].mode, unit.building, zones.flatMap(z => z.rows), unit, zones)}
                     <div class="env-unit-table">${facilityPlanTableOf(zones.map(z => ({ label: modeTag(z.mode), rows: z.rows })))}</div>
@@ -2105,8 +3548,9 @@ function updateRateDisplay(pickUnit = false) {
     if (!rows) {
         if (select.closest('#priority-rates')) rateLine.appendChild(select);
         const label = CURRENCY_LABELS[lastPlan.currency] || lastPlan.currency;
-        document.getElementById('plan-rate').textContent = `${formatNumber(lastPlan.rate_per_second * multiplier)} ${label}${suffix}`;
-        document.getElementById('rate-label').textContent = 'Your rate';
+        const points = lastPlan.season_points > 1e-12 ? ` + ${formatRate(lastPlan.season_points * multiplier)} ${SEASON.points}` : '';
+        document.getElementById('plan-rate').textContent = `${formatRate(lastPlan.rate_per_second * multiplier)} ${label}${points}${suffix}`;
+        document.getElementById('rate-label').textContent = 'Your Rate';
         rateLine.style.display = '';
         table.innerHTML = '';
         return;
@@ -2132,7 +3576,7 @@ function updateRateDisplay(pickUnit = false) {
             <tbody>${body}</tbody>
         </table>`;
     document.getElementById('priority-rate-head').appendChild(select);
-    document.getElementById('rate-label').textContent = 'Your rates';
+    document.getElementById('rate-label').textContent = 'Your Rates';
     rateLine.style.display = 'none';
 }
 
@@ -2149,10 +3593,15 @@ function priorityRows(plan) {
         label: priorityLabel(p.target, planContext?.aniipod),
         perSecond: p.per_second,
         items: p.items || [],
+        streams: p.streams || [],
         missing: missing[p.target] || null,
     }));
     if (!rows.some(r => r.target === 'coins')) {
-        rows.push({ rank: null, target: 'coins', label: rows.length ? "Coins, from what's left" : 'Coins', perSecond: plan.rate_per_second, items: [], missing: null });
+        rows.push({ rank: null, target: 'coins', label: rows.length ? "Home Coins, from what's left" : 'Home Coins', perSecond: plan.rate_per_second, items: [], missing: null });
+    }
+    // During the season, points come with every season item sold, ranked or not.
+    if (plan.season_points != null && !rows.some(r => r.target === 'season_points')) {
+        rows.push({ rank: null, target: 'season_points', label: SEASON.points, perSecond: plan.season_points, items: [], missing: null });
     }
     return rows;
 }
@@ -2162,6 +3611,7 @@ function priorityRows(plan) {
 // listener target, so switching units never needs a re-solve.
 function updateRateUnitDisplays() {
     updateRateDisplay();
+    renderImprovements();
     if (lastPlan && lastPlan.success) {
         renderSeedTable(lastPlan);
         renderLevelUp(lastPlan);
@@ -2174,7 +3624,7 @@ function updateRateUnitDisplays() {
 // Render a successfully computed plan: rate summary + facility plan table. Goal-independent,
 // called once per Calculate click (or facility/currency/module change), not on every goal
 // keystroke.
-function displayPlan(plan, scroll = true) {
+function displayPlan(plan) {
     const resultsSection = document.getElementById('results-section');
     const errorEl = document.getElementById('error-message');
     const resultsContent = document.getElementById('results-content');
@@ -2184,17 +3634,24 @@ function displayPlan(plan, scroll = true) {
 
     if (!plan.success) {
         goalSection.style.display = 'none';
+        if (selectedSetupTab() === 'custom') {
+            showRosterShortfall();
+            return;
+        }
         showError(plan.error || 'An unknown error occurred.');
+        showSetupOnly();
         return;
     }
 
     errorEl.style.display = 'none';
     resultsContent.style.display = 'block';
+    resultsContent.classList.remove('setup-only');
     // A level-up plan's own card says how long it takes; the goal is for coin plans.
     goalSection.style.display = plan.level_up ? 'none' : 'block';
 
     updateRateDisplay(!rateUnitChosen);
     renderGoalTargets(plan);
+    renderHomelandLayout(plan);
 
     // Said only when the plan might not be the best: the solver ran out of time, or the backup
     // planner made it.
@@ -2230,8 +3687,7 @@ function displayPlan(plan, scroll = true) {
     renderProfitBreakdown(plan);
     renderFacilityPlan(plan);
     renderAniimoSummary(plan);
-
-    if (scroll) resultsSection.scrollIntoView({ behavior: 'smooth' });
+    // The page stays where the player is; the results appear without scrolling to them.
 }
 
 // Render a time-to-goal result: Total Time / Amount Produced summary + Product Breakdown. Called
@@ -2273,14 +3729,18 @@ async function runFindPlan() {
     btn.disabled = true;
     btnText.style.display = 'none';
     btnLoading.style.display = 'inline';
-    progressBar.style.display = 'block';
-    progressCaption.style.display = 'block';
+    // The progress card below the button follows each step; the bar only shows if the backup
+    // planner runs, since that one counts its trials.
+    progressBar.style.display = 'none';
+    progressCaption.style.display = 'none';
     progressFill.style.width = '';
-    progressFill.classList.add('indeterminate');
-    progressCaption.textContent = 'Finding the best plan...';
 
     const runId = ++planRunId;
     plansBySetup = {};
+    rankingsBySetup = {};
+    stopRanking();
+    stopSetupSolve();
+    stopLayout();
     if (pendingWorkerRequests.size > 0) restartWorker();
     try {
         const input = getPlanInputValues();
@@ -2294,7 +3754,9 @@ async function runFindPlan() {
             hasPolisher: (input.facilities['Dance Pad Polisher'] || []).some(t => t.count > 0),
             // Only what the player skipped; locked special recipes are the default, not news.
             skipped: [...skippedRecipes].sort((a, b) => prettyItem(a).localeCompare(prettyItem(b))),
+            simple: isSimpleMode(),
         };
+        startProgress(input, runId);
 
         // Runs in the worker (see worker.js); the main thread stays free to paint the progress
         // bar above for however long this takes, instead of freezing. `onTrialProgress` receives
@@ -2302,33 +3764,58 @@ async function runFindPlan() {
         // a fill percentage by `trialCountToPercent` below.
         // Only the backup planner reports progress (see worker.js); the exact planner is quick.
         // Whichever Best the player has asked for; the other one waits until they switch to it.
-        const bestSetup = selectedAniimoSetup() === 'minimum' ? 'best' : selectedAniimoSetup();
+        const bestSetup = selectedAniimoSetup() === 'minimum' ? bestAniimoSetup() : selectedAniimoSetup();
+        Object.assign(input, aniimoInput(bestSetup));
         const bestJson = await callWorker('find_plan', JSON.stringify({ ...input, aniimo: bestSetup }), (count) => {
-            progressFill.classList.remove('indeterminate');
+            // The exact planner reports each solve; the backup planner counts its trials.
+            if (typeof count === 'object') {
+                setStep(count.step, count.state, undefined, count.proven);
+                return;
+            }
+            setStep('backup', 'start', `trial ${count}`);
+            progressBar.style.display = 'block';
             progressFill.style.width = `${trialCountToPercent(count)}%`;
-            progressCaption.textContent = `Backup planner, trial ${count}...`;
         });
         progressFill.style.width = '100%';
         if (runId !== planRunId) return;
+        finishSolveSteps();
         plansBySetup[bestSetup] = JSON.parse(bestJson);
-        showSelectedPlan(true);
+        showSelectedPlan();
+        // With no plan there's nothing to lay out or improve on.
+        if (!plansBySetup[bestSetup].success && progress) {
+            progress.steps.forEach(s => { if ((s.key === 'layout' || s.key === 'improve') && s.state === 'pending') s.state = 'skipped'; });
+            renderProgress();
+        }
 
         // The Minimum setup solves after Best is already on screen; switching to it before it's
         // done shows a short "still working" note until it arrives.
+        setStep('minimum', 'start');
         callWorker('find_plan', JSON.stringify({ ...input, aniimo: 'minimum' }))
             .then(json => {
                 if (runId !== planRunId) return;
+                setStep('minimum', 'done');
                 plansBySetup.minimum = JSON.parse(json);
-                if (selectedAniimoSetup() === 'minimum') showSelectedPlan(false);
+                if (selectedAniimoSetup() === 'minimum') showSelectedPlan();
             })
             .catch(error => {
-                if (runId === planRunId) console.error('Minimum Aniimo plan failed:', error);
+                if (runId !== planRunId) return;
+                setStep('minimum', 'fail');
+                console.error('Minimum Aniimo plan failed:', error);
+                plansBySetup.minimum = { success: false, error: `The Minimum team plan failed: ${error.message}` };
+                if (selectedAniimoSetup() === 'minimum') showSelectedPlan();
             });
     } catch (error) {
+        // A run a newer one cancelled leaves the screen to it.
+        if (runId !== planRunId) return;
+        if (progress) {
+            progress.steps.forEach(s => { if (s.state === 'running') s.state = 'fail'; else if (s.state === 'pending') s.state = 'skipped'; });
+            renderProgress();
+        }
         console.error('Plan calculation error:', error);
         lastPlan = null;
         showError(`Plan calculation failed: ${error.message}`);
     } finally {
+        if (runId !== planRunId) return;
         btn.disabled = false;
         btnText.style.display = 'inline';
         btnLoading.style.display = 'none';
@@ -2358,15 +3845,16 @@ async function runTimeToGoal() {
             const resultJson = await callWorker('time_to_reach', JSON.stringify({ plan: lastPlan, target, current }));
             const result = JSON.parse(resultJson);
             displayGoal(result);
-            renderGoalAlso(rows, chosen, result.success ? result.total_time_seconds : null);
+            renderGoalAlso(rows, chosen, result.success ? result.total_time_seconds : null, result);
         } catch (error) {
             console.error('Goal calculation error:', error);
         }
         return;
     }
-    // Anything else comes in at its steady rate; the breakdown covers that long.
+    // Anything else waits on each item's first batch too (see `madeBy`). The breakdown covers
+    // that long.
     const needed = Math.max(0, target - current);
-    const seconds = needed <= 0 ? 0 : chosen.perSecond > 1e-12 ? needed / chosen.perSecond : null;
+    const seconds = needed <= 0 ? 0 : chosen.perSecond <= 1e-12 ? null : timeToMake(chosen, needed);
     if (seconds === null) {
         lastGoalResult = null;
         document.getElementById('total-time').textContent = chosen.missing || 'Not made by this plan';
@@ -2377,21 +3865,49 @@ async function runTimeToGoal() {
         return;
     }
     try {
-        const resultJson = await callWorker('time_to_reach', JSON.stringify({ plan: lastPlan, seconds }));
-        displayGoal(JSON.parse(resultJson));
+        const result = JSON.parse(await callWorker('time_to_reach', JSON.stringify({ plan: lastPlan, seconds })));
+        displayGoal(result);
         document.getElementById('amount-produced').textContent = formatNumber(Math.round(needed));
-        renderGoalAlso(rows, chosen, seconds);
+        renderGoalAlso(rows, chosen, seconds, result);
     } catch (error) {
         console.error('Goal calculation error:', error);
     }
 }
 
-// What else the plan makes by the time the goal is met, e.g. "4.6M coins, 39 Aniipod Mega".
-function renderGoalAlso(rows, chosen, seconds) {
+// How much of a rates row the plan has made after `seconds`: each item counts from its first batch
+// on (see `production_over` in optimizer.rs, which does the same for Home Coins). Season points
+// not ranked as a priority come from the income streams, which carry each item's points.
+function madeBy(row, seconds) {
+    const streams = row.streams?.length ? row.streams
+        : row.target === 'season_points'
+            ? (lastPlan?.income_streams || []).map(s => [(s.points || 0) * s.units_per_second, s.lead_time_seconds])
+            : [[row.perSecond, 0]];
+    return streams.reduce((sum, [rate, lead]) => sum + rate * Math.max(0, seconds - lead), 0);
+}
+
+// Seconds until the plan has made `needed` of a rates row, or null if it never does.
+function timeToMake(row, needed) {
+    let lo = 0;
+    let hi = 3600;
+    while (madeBy(row, hi) < needed) {
+        hi *= 2;
+        if (hi > 1e10) return null;
+    }
+    for (let i = 0; i < 100; i++) {
+        const mid = (lo + hi) / 2;
+        if (madeBy(row, mid) >= needed) hi = mid; else lo = mid;
+    }
+    return hi;
+}
+
+// What else the plan makes by the time the goal is met, e.g. "4.6M Home Coins, 39 Aniipod Mega",
+// each counted from its first batch as the goal itself is.
+function renderGoalAlso(rows, chosen, seconds, result) {
     const el = document.getElementById('goal-also');
+    const made = r => r.target === 'coins' && result?.success ? result.amount_produced : madeBy(r, seconds);
     const also = seconds > 0
         ? rows.filter(r => r !== chosen && r.perSecond > 1e-12)
-            .map(r => `${formatNumber(Math.floor(r.perSecond * seconds))} ${r.target === 'coins' ? 'coins' : goalName(r)}`)
+            .map(r => `${formatNumber(Math.floor(made(r)))} ${goalName(r)}`)
         : [];
     el.style.display = also.length ? 'block' : 'none';
     el.innerHTML = also.length ? `<span>By then you'll also have:</span> <strong>${also.join(', ')}</strong>` : '';
@@ -2463,14 +3979,14 @@ function formatRecipeAniimo(recipe, facility) {
             `<span class="job"><span class="job-step">${step}${times > 1 ? ` &times;${times}` : ''}</span> ${abilityTag(ability)}${level > 1 ? ` Lv.${level}+` : ''}</span>`).join('')}</span>`;
     }
     const [ability, minLevel] = recipe.aniimo;
-    const best = `best Lv.${bestAniimoLevel()}${facility.personality ? ' ' + facility.personality : ''}`;
+    const best = `best Lv.${bestAniimoLevel(ability)}${facility.personality ? ' ' + facility.personality : ''}`;
     return `<span>${abilityTag(ability)} Lv.${minLevel}+<span class="recipe-best">${best}</span></span>`;
 }
 
-// "44 coins", or what a level-up material is for.
+// "44 Home Coins", or what a level-up material is for.
 function formatRecipeSell(recipe) {
     if (recipe.sell_currency === 'none') return '<span class="hint small">RV level-ups</span>';
-    return `${formatNumber(recipe.sell_value)} ${recipe.sell_value === 1 ? 'coin' : 'coins'}`;
+    return `${formatNumber(recipe.sell_value)} ${recipe.sell_value === 1 ? 'Home Coin' : 'Home Coins'}`;
 }
 
 function formatRecipeModule(recipe) {
@@ -2504,7 +4020,7 @@ function renderRecipeTables(recipes) {
             const cell = (label, value) => `<td data-label="${label}"${value === '-' ? ' class="empty"' : ''}>${value}</td>`;
             const rows = byFacility.get(f.name).map(r => `
                 <tr${r.verified === false ? ' class="unverified"' : ''}>
-                    <td class="recipe-name">${prettyItem(r.name)}${SPECIAL_NAMES.has(r.name) ? ' <span class="tag special" title="Takes a rare currency to unlock">special</span>' : ''}${r.verified === false ? ' <span class="info-icon" data-tooltip="Not yet checked in game.">?</span>' : ''}</td>
+                    <td class="recipe-name">${prettyItem(r.name)}${SPECIAL_NAMES.has(r.name) ? ' <span class="tag special" title="Takes a rare currency to unlock">special</span>' : ''}${r.season ? ` <span class="tag special" title="${SEASON.name} only">season</span>` : ''}${r.verified === false ? ' <span class="info-icon" data-tooltip="Not yet checked in game.">?</span>' : ''}</td>
                     ${cell('Level', r.facility_level)}
                     ${cell('Inputs', formatRecipeInputs(r))}
                     ${cell('Yield', formatRecipeYield(r))}
@@ -2593,7 +4109,11 @@ document.addEventListener('DOMContentLoaded', () => {
     renderSkippedRecipes();
     attachSpecialHandlers();
     renderSpecialRecipes();
+    attachSeasonHandlers();
+    attachRosterHandlers();
+    attachLayoutHandlers();
     attachPriorityHandlers();
+    showAniimoSetup();
     applyConfigMode();
     initWasm();
 
@@ -2603,15 +4123,35 @@ document.addEventListener('DOMContentLoaded', () => {
         rateUnitChosen = true;
         updateRateUnitDisplays();
     });
-    document.getElementById('aniimo-best').addEventListener('change', () => switchAniimoSetup());
+    ['aniimo-best', 'aniimo-minimum', 'aniimo-custom'].forEach(id =>
+        document.getElementById(id).addEventListener('change', showAniimoSetup));
     document.getElementById('aniimo-toggle').addEventListener('click', () => {
         const toggle = document.getElementById('aniimo-toggle');
         const expanded = toggle.getAttribute('aria-expanded') !== 'true';
         toggle.setAttribute('aria-expanded', String(expanded));
         document.getElementById('aniimo-body').hidden = !expanded;
     });
-    document.getElementById('aniimo-minimum').addEventListener('change', () => switchAniimoSetup());
-    document.getElementById('has-level-four').addEventListener('change', () => switchAniimoSetup());
+    // Best's level buttons are named `level-<ability>`; the roster editor handles its own.
+    document.getElementById('aniimo-setup-panel').addEventListener('change', event => {
+        const { name, value, checked } = event.target;
+        const unheardOf = event.target.dataset?.confirm;
+        if (unheardOf && checked) {
+            const ok = window.confirm(
+                `No level-${value} ${unheardOf} Aniimo is known in the game yet. Plan as though you have one?`
+            );
+            if (!ok) {
+                showAniimoSetup();
+                return;
+            }
+        }
+        if (name?.startsWith('level-')) {
+            aniimoLevels[name.slice('level-'.length)] = Number(value);
+        } else {
+            return;
+        }
+        saveInputsToStorage();
+        switchAniimoSetup();
+    });
 
     // Goal fields update live; no need to re-run the facility-allocation solve just because the
     // goal amount changed.
@@ -2634,3 +4174,98 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 });
+
+// --- Hover tips --------------------------------------------------------------------------
+// One card for hover tips, shown at once instead of after the browser's delay. Diagram pieces
+// carry `data-tip` (see `tipAttrs`); anything else with a `title` shows it in the same card, the
+// title moved aside so the browser's own tip doesn't show as well. (The info icons' `data-tooltip`
+// is a CSS tip of its own; see style.css.)
+const tipCard = document.createElement('div');
+tipCard.className = 'tip-card';
+tipCard.setAttribute('role', 'tooltip');
+tipCard.hidden = true;
+document.body.appendChild(tipCard);
+let tipTarget = null;
+const TIP_SELECTOR = '[data-tip], [data-tip-text], [title]';
+
+// The attributes for a diagram piece's tip: its name, then what it's doing and its numbers.
+function tipAttrs(title, { detail = '', stats = '', color = '' } = {}) {
+    const attr = (name, value) => value ? ` ${name}="${escapeText(value)}"` : '';
+    const label = [title, detail, stats].filter(Boolean).join(', ');
+    return `data-tip="${escapeText(title)}"${attr('data-tip-detail', detail)}${attr('data-tip-stats', stats)}${attr('data-tip-color', color)} aria-label="${escapeText(label)}"`;
+}
+
+function showTip(el) {
+    // A title set since the last hover replaces the one kept aside.
+    if (el.hasAttribute('title')) {
+        const text = el.getAttribute('title');
+        el.removeAttribute('title');
+        el.dataset.tipText = text;
+        if (!el.hasAttribute('aria-label')) el.setAttribute('aria-description', text);
+    }
+    if (!el.dataset.tip && !el.dataset.tipText) return hideTip();
+    const line = (className, text) => {
+        const div = document.createElement('div');
+        div.className = className;
+        div.textContent = text;
+        return tipCard.appendChild(div);
+    };
+    tipCard.replaceChildren();
+    tipCard.classList.toggle('has-swatch', !!el.dataset.tipColor);
+    if (el.dataset.tip) {
+        const title = line('tip-title', el.dataset.tip);
+        if (el.dataset.tipColor) {
+            const swatch = document.createElement('span');
+            swatch.className = 'tip-swatch';
+            swatch.style.background = el.dataset.tipColor;
+            title.prepend(swatch);
+        }
+        if (el.dataset.tipDetail) line('tip-detail', el.dataset.tipDetail);
+        if (el.dataset.tipStats) line('tip-stats', el.dataset.tipStats);
+    } else {
+        line('tip-text', el.dataset.tipText);
+    }
+    tipTarget = el;
+    tipCard.hidden = false;
+}
+
+function hideTip() {
+    tipTarget = null;
+    tipCard.hidden = true;
+}
+
+// Above the point, centered on it and kept on screen; below it where there's no room above.
+function placeTip(x, y, below = y) {
+    const margin = 12;
+    const { width, height } = tipCard.getBoundingClientRect();
+    const left = Math.min(Math.max(margin, x - width / 2), window.innerWidth - width - margin);
+    const top = y - height - 14 >= margin ? y - height - 14 : Math.min(below + 18, window.innerHeight - height - margin);
+    tipCard.style.left = `${left}px`;
+    tipCard.style.top = `${top}px`;
+}
+
+document.addEventListener('pointerover', (e) => {
+    const el = e.target.closest?.(TIP_SELECTOR);
+    if (!el) return hideTip();
+    if (el !== tipTarget || el.hasAttribute('title')) showTip(el);
+    if (tipTarget) placeTip(e.clientX, e.clientY);
+});
+document.addEventListener('pointermove', (e) => {
+    if (!tipTarget) return;
+    if (!tipTarget.isConnected) return hideTip();
+    placeTip(e.clientX, e.clientY);
+}, { passive: true });
+// A tap's tip stays until the next tap; a mouse's goes when it leaves.
+document.addEventListener('pointerout', (e) => {
+    if (e.pointerType !== 'touch' && tipTarget && !tipTarget.contains(e.relatedTarget)) hideTip();
+});
+document.addEventListener('focusin', (e) => {
+    const el = e.target.closest?.(TIP_SELECTOR);
+    if (!el || !e.target.matches(':focus-visible')) return;
+    showTip(el);
+    const box = el.getBoundingClientRect();
+    if (tipTarget) placeTip(box.left + box.width / 2, box.top, box.bottom);
+});
+document.addEventListener('focusout', hideTip);
+window.addEventListener('scroll', hideTip, { passive: true, capture: true });
+

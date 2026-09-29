@@ -825,9 +825,14 @@ tbody tr:first-child td {
     pointer-events: none;
 }
 
-.env-plot:hover rect {
+.env-plot:hover rect,
+.layout-piece:hover > rect {
     fill-opacity: 1;
     stroke: currentColor;
+}
+
+.env-building:hover > rect {
+    stroke-opacity: 1;
 }
 
 .env-legend {
@@ -881,6 +886,11 @@ footer {
     font-size: 0.8rem;
     border-top: 1px solid var(--border);
     margin-top: 2rem;
+}
+
+.footer-note {
+    margin-top: 0.35rem;
+    font-size: 0.75rem;
 }
 
 /* Loading State */
@@ -2283,20 +2293,547 @@ tr:hover .skip-row,
     padding-top: 0.25rem;
 }
 
-/* The Best/Minimum tabs and the level-4 tick beside them. */
-.aniimo-setup-controls {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    flex-wrap: wrap;
+/* Saying which Aniimo you have: ability levels under Best, the roster under My Aniimo. */
+.aniimo-setup-panel {
+    padding: 0.1rem 0 0.9rem;
 }
 
-.aniimo-setup-controls .aniimo-cap {
+.aniimo-setup-panel > .hint {
+    margin: 0 0 0.6rem;
+}
+
+.ability-levels {
+    display: grid;
+    gap: 0.35rem;
+}
+
+.ability-levels {
+    grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+}
+
+.ability-level {
     display: flex;
     align-items: center;
-    gap: 0.35rem;
-    font-size: 0.82rem;
-    color: var(--text-muted, #9aa0a8);
-    white-space: nowrap;
+    gap: 0.5rem;
+}
+
+.ability-level .ability {
+    min-width: 5.5rem;
+    text-align: center;
+}
+
+/* A level, in the same segmented style as the tabs above but sized for a digit. */
+.tabs.level-picker {
+    margin: 0;
+    padding: 2px;
+    border-radius: 8px;
+}
+
+.tabs.level-picker label {
+    padding: 0.15rem 0.5rem;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+}
+
+/* A `hidden` element stays hidden whatever else its class says about display. */
+[hidden] {
+    display: none !important;
+}
+
+/* How many Aniimo the plan wants, against how many the homeland holds. */
+.aniimo-count {
+    display: flex;
+    align-items: baseline;
+    gap: 0.15rem;
+    margin: 0 0 0 1.05rem;
+    font-size: 1.6rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+}
+
+.aniimo-count-of::before {
+    content: '/';
+    margin: 0 0.25rem 0 0.1rem;
+    color: var(--text-muted);
+    font-weight: 400;
+}
+
+.aniimo-count-of {
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    font-weight: 500;
+}
+
+.aniimo-count.over {
+    color: var(--danger, #e5484d);
+}
+
+/* A level the game isn't known to have an Aniimo at. */
+.level-picker label.unheard-of {
+    color: color-mix(in srgb, var(--text-muted) 70%, transparent);
+}
+
+.level-picker label.unheard-of::after {
+    content: '*';
+    font-size: 0.7em;
+    vertical-align: super;
+}
+
+/* Harvest Moon Festival: a switch, then the season's inputs while it's on. */
+.season {
+    margin: 0 0 1.25rem;
+}
+
+.season-switch {
+    font-size: 0.95rem;
+    color: var(--text);
+}
+
+.season-title {
+    font-weight: 600;
+}
+
+#season-config {
+    margin-top: 0.75rem;
+}
+
+/* A column's unit under its name, e.g. "Profit" over "Home Coins/hour". */
+.th-unit {
+    display: block;
+    font-size: 0.7rem;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--text-muted);
+}
+
+/* Opportunities: one row per change, its gain beside it. */
+.improve-list {
+    margin: 0.75rem 0 0;
+    padding-left: 0;
+    list-style: none;
+    display: grid;
+    gap: 0.45rem;
+}
+
+.improve-list li {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    gap: 0.25rem 1rem;
+}
+
+.improve-name {
+    font-weight: 600;
+}
+
+.improve-gain {
+    color: var(--accent);
+}
+
+/* Opportunities: everything the ranking tried. */
+.improve-checked {
+    margin-top: 0.5rem;
+}
+
+.improve-checked-list {
+    list-style: none;
+    margin: 0.35rem 0 0;
+    padding: 0;
+    display: grid;
+    gap: 0.25rem;
+    font-size: 0.85rem;
+}
+
+.improve-checked-list li {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.2rem 1rem;
+}
+
+.improve-none {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+}
+
+/* Homeland layout. */
+.layout-diagram {
+    margin-top: 0.75rem;
+    overflow: auto;
+}
+
+.layout-svg {
+    width: 100%;
+    max-height: 90vh;
+    display: block;
+}
+
+.layout-whole {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.85rem;
     cursor: pointer;
+}
+
+.layout-svg text {
+    text-anchor: middle;
+    dominant-baseline: central;
+    fill: var(--text);
+    font-weight: 600;
+    pointer-events: none;
+}
+
+.layout-storage {
+    fill: var(--accent);
+    stroke: var(--text);
+    stroke-width: 0.08;
+}
+
+.layout-svg .layout-storage-text {
+    fill: var(--bg, #111);
+}
+
+/* Deliveries to the Storage Unit (see "Deliveries" in app.js): a piece's line shows once its
+   first batch is in. */
+.layout-flow-line {
+    stroke: var(--accent);
+    stroke-opacity: 0;
+    stroke-width: 0.07;
+    transition: stroke-opacity 0.4s;
+}
+
+.layout-flow-line.live {
+    stroke-opacity: 0.35;
+}
+
+.layout-dot {
+    fill: var(--accent);
+}
+
+/* A piece's batch: the fill goes round as it works, and the ring turns amber while it waits for
+   materials. */
+.layout-ring circle {
+    fill: none;
+    stroke-width: 0.12;
+}
+
+.layout-ring .ring-track {
+    stroke: var(--bg);
+    stroke-opacity: 0.55;
+}
+
+.layout-ring .ring-fill {
+    stroke: var(--text);
+}
+
+.layout-ring.waiting .ring-track {
+    stroke: var(--warning);
+    stroke-opacity: 0.9;
+}
+
+.layout-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-top: 0.6rem;
+}
+
+.layout-toggles {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 1rem;
+}
+
+.layout-diagram.no-sim .layout-flows,
+.layout-diagram.no-sim .layout-rings {
+    display: none;
+}
+
+.layout-sim {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+/* Progress card under the button: each step of working out a plan. */
+.solve-progress {
+    margin-top: 0.75rem;
+    padding: 0.75rem 1rem;
+}
+
+.progress-steps {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+}
+
+.progress-step {
+    display: grid;
+    grid-template-columns: 1.1rem 1fr auto;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.progress-step.pending,
+.progress-step.skipped {
+    color: var(--text-muted);
+}
+
+.step-note {
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.step-icon {
+    text-align: center;
+    font-weight: 700;
+}
+
+.step-icon.done {
+    color: var(--accent);
+}
+
+.step-icon.fail {
+    color: #ef4444;
+}
+
+.step-spinner {
+    width: 0.8rem;
+    height: 0.8rem;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: step-spin 0.8s linear infinite;
+    justify-self: center;
+}
+
+@keyframes step-spin {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .step-spinner {
+        animation-duration: 2.4s;
+    }
+}
+
+/* Homeland plots in the layout: open ones outlined and numbered, the rest hatched. */
+.layout-plot rect {
+    fill: none;
+    stroke: var(--text-muted);
+    stroke-opacity: 0.6;
+    stroke-width: 0.12;
+}
+
+/* Locked plots: red, hatched, outlined and labelled in red. */
+.layout-plot.locked rect {
+    fill: url(#layout-locked);
+    stroke: #ef4444;
+    stroke-opacity: 1;
+}
+
+.layout-svg .layout-plot.locked text {
+    fill: #ef4444;
+}
+
+.layout-svg .layout-plot text {
+    text-anchor: start;
+    dominant-baseline: hanging;
+    fill: var(--text-muted);
+    font-weight: 600;
+}
+
+.layout-hatch {
+    stroke: #ef4444;
+    stroke-opacity: 0.3;
+    stroke-width: 0.12;
+}
+
+/* My Aniimo: one card per kind of Aniimo the player has. */
+.roster-editor {
+    display: grid;
+    gap: 0.6rem;
+    margin-top: 0.5rem;
+}
+
+.roster-card {
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.6rem 0.75rem;
+    display: grid;
+    gap: 0.45rem;
+}
+
+.roster-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.roster-name {
+    flex: 1;
+    width: 0;
+    min-width: 0;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 0.2rem 0.35rem;
+    color: var(--text);
+    font-weight: 600;
+}
+
+.roster-name:hover,
+.roster-name:focus {
+    border-color: var(--border);
+}
+
+.roster-count {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.roster-count button,
+.roster-x {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-muted);
+    cursor: pointer;
+    min-width: 1.6rem;
+    height: 1.6rem;
+    line-height: 1;
+}
+
+.roster-count button:hover,
+.roster-x:hover {
+    color: var(--text);
+}
+
+.roster-abilities,
+.roster-personalities {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.6rem;
+}
+
+.roster-ability {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.roster-ability .roster-x {
+    min-width: 1.3rem;
+    height: 1.3rem;
+    font-size: 0.7rem;
+}
+
+.roster-add-ability {
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    padding: 0.2rem 0.4rem;
+}
+
+.roster-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+/* A plan that failed shows only the Aniimo card, whose setup may be what to change. */
+#results-content.setup-only > :not(#aniimo-card) {
+    display: none !important;
+}
+
+/* While another Aniimo setup is worked out, the last one's results are dimmed. */
+#results-content.stale > :not(#aniimo-card),
+#results-content.stale #aniimo-body,
+#results-content.stale #aniimo-abilities {
+    opacity: 0.45;
+    pointer-events: none;
+}
+
+/* Hover tips (see "Hover tips" in app.js). */
+.tip-card {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 1000;
+    max-width: min(300px, calc(100vw - 24px));
+    padding: 0.5rem 0.7rem;
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    font-size: 0.8rem;
+    line-height: 1.4;
+    pointer-events: none;
+}
+
+.tip-card:not([hidden]) {
+    animation: tip-in 90ms ease-out;
+}
+
+@keyframes tip-in {
+    from {
+        opacity: 0;
+        transform: translateY(3px);
+    }
+}
+
+.tip-title {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-weight: 600;
+}
+
+.tip-swatch {
+    flex: none;
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 3px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+
+.tip-detail {
+    margin-top: 0.1rem;
+}
+
+.tip-stats {
+    margin-top: 0.15rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.tip-card.has-swatch .tip-detail,
+.tip-card.has-swatch .tip-stats {
+    padding-left: 1.1rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tip-card:not([hidden]) {
+        animation: none;
+    }
 }

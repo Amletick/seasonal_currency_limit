@@ -15,6 +15,9 @@
 //!   runs one mode and one coverage mix (see [`crate::coverage::single_building_options`]).
 //! - Woodland and Mine byproducts (Wood Blocks, Mineral Sand) balance like any other item, so the
 //!   Woodworking Bench and Chimney Kiln can use them.
+//! - During a season, its items also earn points when sold, which a priority or floor can name
+//!   as [`crate::models::SEASON_POINTS`]. Season seeds cost the season currency, which plans treat
+//!   as unlimited (see [`crate::models::SeasonTerms`]).
 //! - The objective is the target currency per second from everything sold; for coins, minus seed
 //!   costs (seeds are paid in coins, so they don't come off an Aniimo EXP total). A floor can
 //!   name another currency, so a plan keeps up the Aniimo EXP or Aniipods an earlier solve found
@@ -129,6 +132,9 @@ pub struct ExactPlan {
     pub pairs: Vec<ExactPair>,
     /// Level-ups per day, for a level-up goal (see [`PACE_UNIT`]).
     pub pace: Option<f64>,
+    /// When planning with the player's roster, `(building, member, share of its day)` for each
+    /// environment building kind a member staffs (see [`crate::models::Crew`]).
+    pub staffing: Vec<(String, usize, f64)>,
 }
 
 /// What a plan optimizes.
@@ -226,6 +232,9 @@ enum VarKind<'a> {
         types: Vec<&'a str>,
         option: PairOption,
     },
+    /// How much of a roster member's day goes to staffing environment buildings of one kind
+    /// (see [`crate::models::Crew`]).
+    Staff { building: String, member: usize },
 }
 
 /// One linear constraint: `(variable, coefficient)` terms, comparison, right-hand side.
@@ -244,7 +253,16 @@ struct Model<'a> {
     priority: Vec<u8>,
     kinds: Vec<VarKind<'a>>,
     constraints: Vec<Constraint>,
+    /// `(variable, weight)` for the tie-break in the objective (see [`BUILDING_TIE_BREAK`]),
+    /// so a solve's objective can be given back without it.
+    tiebreak: Vec<(usize, f64)>,
 }
+
+/// What each environment building a plan sets up costs in the objective: far too little to give
+/// up anything real for (0.036 coins an hour), but enough that of plans that are otherwise equal,
+/// the one with the fewest buildings wins. Each building in use needs an Aniimo, and otherwise
+/// the solver is free to spread three plots over two Heat Furnaces that one would cover.
+const BUILDING_TIE_BREAK: f64 = 1e-5;
 
 impl<'a> Model<'a> {
     fn add(&mut self, objective: f64, bounds: (f64, f64), integer: bool, kind: VarKind<'a>) -> usize {
@@ -311,6 +329,7 @@ fn build_model<'a>(
         priority: Vec::new(),
         kinds: Vec::new(),
         constraints: Vec::new(),
+        tiebreak: Vec::new(),
     };
 
     // Seeds are paid in coins, so they only come off a coin total.
@@ -349,15 +368,12 @@ fn build_model<'a>(
         Goal::Earn { floors } => floors.iter().map(|(name, _)| name.as_str()).collect(),
         _ => Vec::new(),
     };
-    let mut sold_of: Vec<(usize, &str, f64)> = Vec::new();
+    let mut sold_of: Vec<(usize, &ProductionItem)> = Vec::new();
     for (&item_name, terms) in &mut balance {
-        if let Some(item) = all.get(item_name) {
-            let sells_for = item.sell_currency.as_str();
-            let wanted = sells_for == currency || floor_currencies.contains(&sells_for);
-            if wanted && item.sell_value > 0.0 {
-                let earns = if sells_for == currency { item.sell_value } else { 0.0 };
-                let sold = model.add(earns, (0.0, f64::INFINITY), false, VarKind::Sold(item.name.as_str()));
-                sold_of.push((sold, sells_for, item.sell_value));
+        if let Some(&item) = all.get(item_name) {
+            if item.earns(currency) > 0.0 || floor_currencies.iter().any(|&c| item.earns(c) > 0.0) {
+                let sold = model.add(item.earns(currency), (0.0, f64::INFINITY), false, VarKind::Sold(item.name.as_str()));
+                sold_of.push((sold, item));
                 terms.push((sold, -1.0));
             }
         }
@@ -578,7 +594,7 @@ fn build_model<'a>(
                 // Otherwise it's a currency: everything sold for it, at its value, less seed costs
                 // for coins (seeds are paid in coins).
                 let mut sold: Vec<(usize, f64)> =
-                    sold_of.iter().filter(|(_, c, _)| c == resource).map(|&(v, _, value)| (v, value)).collect();
+                    sold_of.iter().filter(|(_, item)| item.earns(resource) > 0.0).map(|&(v, item)| (v, item.earns(resource))).collect();
                 if resource == "coins" {
                     sold.extend(rate_of.iter().filter(|(r, _)| r.cost.unwrap_or(0.0) > 0.0).map(|&(r, v)| (v, -r.cost.unwrap_or(0.0))));
                 }
@@ -603,7 +619,70 @@ fn build_model<'a>(
         }
         Goal::LevelUp(_) | Goal::EarnWhileLevelingUp(..) | Goal::StockUp(..) => {}
     }
+    // With the player's own Aniimo (see `Crew`), each member's day covers everything it works:
+    // a recipe's time per batch at its rate, or at a facility it lives in, the whole day per unit.
+    // Every environment building in use is staffed all day by a member with its ability.
+    if let Some(crew) = facility_counts.crew() {
+        let mut busy: Vec<Vec<(usize, f64)>> = vec![Vec::new(); crew.members.len()];
+        for (&(recipe, rate), &(_, units)) in rate_of.iter().zip(&units_of) {
+            let Some(member) = recipe.crew.filter(|&m| m < busy.len()) else { continue };
+            if crew.residents.contains(&recipe.facility) {
+                busy[member].push((units, 1.0));
+            } else {
+                busy[member].push((rate, recipe.production_time));
+            }
+        }
+        // The environment buildings of each kind the plan sets up; a pair counts each of its two.
+        let mut set_up: BTreeMap<String, BTreeMap<usize, f64>> = BTreeMap::new();
+        for (v, kind) in model.kinds.iter().enumerate() {
+            let named: Vec<&str> = match kind {
+                VarKind::Environment { building, .. } => vec![building],
+                VarKind::EnvironmentPair { buildings: (a, b), .. } => vec![a, b],
+                _ => continue,
+            };
+            for building in named {
+                *set_up.entry(building.to_string()).or_default().entry(v).or_default() += 1.0;
+            }
+        }
+        for (building, used) in set_up {
+            // A building with no ability listed needs no Aniimo (as `check_plan` takes it).
+            let Some(ability) = crew.environment.get(&building) else { continue };
+            let mut staffed: Vec<(usize, f64)> = used.into_iter().map(|(v, n)| (v, -n)).collect();
+            for (member, aniimo) in crew.members.iter().enumerate() {
+                if aniimo.count == 0 || aniimo.level(ability) == 0 {
+                    continue;
+                }
+                let staff = model.add(0.0, (0.0, aniimo.count as f64), false, VarKind::Staff { building: building.clone(), member });
+                staffed.push((staff, 1.0));
+                busy[member].push((staff, 1.0));
+            }
+            model.constrain(staffed, ComparisonOp::Ge, 0.0);
+        }
+        for (member, terms) in busy.into_iter().enumerate() {
+            if !terms.is_empty() {
+                model.constrain(terms, ComparisonOp::Le, crew.members[member].count as f64);
+            }
+        }
+    }
+    // Of plans otherwise equal, the fewest environment buildings: a pair is two.
+    for v in 0..model.kinds.len() {
+        let buildings = match model.kinds[v] {
+            VarKind::Environment { .. } => 1.0,
+            VarKind::EnvironmentPair { .. } => 2.0,
+            _ => continue,
+        };
+        model.objective[v] -= BUILDING_TIE_BREAK * buildings;
+        model.tiebreak.push((v, BUILDING_TIE_BREAK * buildings));
+    }
     model
+}
+
+impl Model<'_> {
+    /// A solve's objective without the tie-break (see [`BUILDING_TIE_BREAK`]): what it really
+    /// made of what it maximized.
+    fn untied(&self, objective: f64, values: &[f64]) -> f64 {
+        objective + self.tiebreak.iter().map(|&(v, w)| w * values.get(v).copied().unwrap_or(0.0)).sum::<f64>()
+    }
 }
 
 const INTEGRAL: f64 = 1e-6;
@@ -852,9 +931,11 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
     let mut environment = Vec::new();
     let mut pairs: Vec<ExactPair> = Vec::new();
     let mut pace = None;
+    let mut staffing = Vec::new();
     for (kind, &v) in model.kinds.iter().zip(values) {
         match kind {
             VarKind::Pace => pace = Some(v),
+            VarKind::Staff { building, member } if v > 1e-9 => staffing.push((building.clone(), *member, v)),
             VarKind::Rate(recipe) if v > 1e-9 => {
                 recipe_rates.insert(recipe.name.clone(), v);
             }
@@ -908,7 +989,7 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
     let rate_per_second = model.earnings.iter().zip(values).map(|(c, v)| c * v).sum();
     ExactPlan {
         rate_per_second,
-        objective: value,
+        objective: model.untied(value, values),
         upper_bound,
         proven_optimal,
         nodes,
@@ -918,6 +999,7 @@ fn plan_from(model: &Model, value: f64, upper_bound: f64, proven_optimal: bool, 
         environment,
         pairs,
         pace,
+        staffing,
     }
 }
 
@@ -976,9 +1058,7 @@ pub fn check_plan(
         *made.entry(item.name.as_str()).or_default() -= sold;
         // An item sold for another currency (Aniimo EXP, Aniipods) leaves the balance the same
         // way, but earns nothing towards `currency`.
-        if item.sell_currency == currency {
-            earned += sold * item.sell_value;
-        }
+        earned += sold * item.earns(currency);
     }
     if let Some(level_up) = level_up {
         let pace = plan.pace.ok_or("the plan has no level-up pace")?;
@@ -1035,9 +1115,45 @@ pub fn check_plan(
             }
         }
     }
-    for (building, used) in buildings_used {
+    for (&building, &used) in &buildings_used {
         if used > facility_counts.get_count(building) {
             return Err(format!("{used} {building} set up but {} owned", facility_counts.get_count(building)));
+        }
+    }
+    // With the player's own Aniimo: no member works more than its day, and every environment
+    // building set up has a member with its ability on it all day.
+    if let Some(crew) = facility_counts.crew() {
+        let mut busy = vec![0.0; crew.members.len()];
+        for (name, &rate) in &plan.recipe_rates {
+            let recipe = all.get(name.as_str()).ok_or(format!("unknown recipe {name}"))?;
+            let Some(member) = recipe.crew else { continue };
+            let slot = busy.get_mut(member).ok_or(format!("{name} is worked by roster member {member}, who isn't there"))?;
+            *slot += if crew.residents.contains(&recipe.facility) {
+                plan.units.get(name).copied().unwrap_or(0) as f64
+            } else {
+                rate * recipe.production_time
+            };
+        }
+        let mut staffed: HashMap<&str, f64> = HashMap::new();
+        for (building, member, share) in &plan.staffing {
+            let aniimo = crew.members.get(*member).ok_or(format!("{building} staffed by roster member {member}, who isn't there"))?;
+            let ability = crew.environment.get(building).ok_or(format!("{building} needs no Aniimo"))?;
+            if aniimo.level(ability) == 0 {
+                return Err(format!("{building} staffed by roster member {member}, who has no {ability}"));
+            }
+            busy[*member] += share;
+            *staffed.entry(building.as_str()).or_default() += share;
+        }
+        for (&building, &used) in &buildings_used {
+            let have = staffed.get(building).copied().unwrap_or(0.0);
+            if used as f64 > have + TOLERANCE {
+                return Err(format!("{used} {building} set up but only {have} staffed"));
+            }
+        }
+        for (member, (&used, aniimo)) in busy.iter().zip(&crew.members).enumerate() {
+            if used > aniimo.count as f64 + TOLERANCE {
+                return Err(format!("roster member {member} works {used} days a day but there are {} of it", aniimo.count));
+            }
         }
     }
     // The measurement build lets a building mix arrangements, which no whole layout can hold, so
@@ -1054,15 +1170,27 @@ pub fn check_plan(
     Ok(earned)
 }
 
-/// The model in CPLEX LP format, for solving with an external solver, and how many variables it
-/// has (`x0` up to `x<count - 1>`; a solver may leave out any that no constraint mentions).
+/// A model written out for an external solver.
+#[derive(Debug, Clone, Default)]
+pub struct LpProblem {
+    /// CPLEX LP text.
+    pub lp: String,
+    /// How many variables, `x0` up to `x<variables - 1>`.
+    pub variables: usize,
+    /// `(variable, weight)` to add back to the solver's objective to take the tie-break out of it
+    /// (see [`BUILDING_TIE_BREAK`]), before using it as a floor for a later solve.
+    pub tiebreak: Vec<(usize, f64)>,
+}
+
+/// The model in CPLEX LP format, for solving with an external solver (a solver may leave out any
+/// variable that no constraint mentions).
 pub fn write_lp(
     items: &[ProductionItem],
     currency: &str,
     facility_counts: &FacilityCounts,
     module_levels: &ModuleLevels,
     goal: Goal,
-) -> (String, usize) {
+) -> LpProblem {
     let model = build_model(items, currency, facility_counts, module_levels, goal);
     let term = |c: f64, v: usize| format!("{} {} x{v}", if c < 0.0 { "-" } else { "+" }, c.abs());
     let mut out = String::from("Maximize\n obj:");
@@ -1097,7 +1225,7 @@ pub fn write_lp(
         }
     }
     out.push_str("End\n");
-    (out, model.objective.len())
+    LpProblem { lp: out, variables: model.objective.len(), tiebreak: model.tiebreak.clone() }
 }
 
 /// Builds an [`ExactPlan`] from an external solver's variable values (in [`write_lp`]'s `x0`,
@@ -1142,8 +1270,7 @@ pub fn plan_from_values(
 pub fn currency_rate(exact: &ExactPlan, items: &[ProductionItem], currency: &str) -> f64 {
     items
         .iter()
-        .filter(|item| item.sell_currency == currency)
-        .map(|item| exact.sold.get(&item.name).copied().unwrap_or(0.0) * item.sell_value)
+        .map(|item| exact.sold.get(&item.name).copied().unwrap_or(0.0) * item.earns(currency))
         .sum()
 }
 
@@ -1155,8 +1282,39 @@ pub fn target_items(exact: &ExactPlan, items: &[ProductionItem], target: &str) -
     }
     items
         .iter()
-        .filter(|item| item.sell_currency == target)
+        .filter(|item| item.earns(target) > 0.0)
         .filter_map(|item| exact.sold.get(&item.name).filter(|&&n| n > 1e-9).map(|&n| (item.name.clone(), n)))
+        .collect()
+}
+
+/// Where a priority `target` other than coins comes from, as `(per second, seconds until the
+/// first batch)` for each item sold for it or each recipe making it as a byproduct, so a goal can
+/// count the wait before each one starts. The rates add up to [`target_rate`]. Empty for coins,
+/// whose goals go by the plan's income streams instead.
+pub fn target_streams(exact: &ExactPlan, items: &[ProductionItem], target: &str) -> Vec<(f64, f64)> {
+    if target == "coins" {
+        return Vec::new();
+    }
+    let all: HashMap<&str, &ProductionItem> = items.iter().map(|i| (i.name.as_str(), i)).collect();
+    let lead = |name: &str| crate::optimizer::item_lead_time(name, &all, 0);
+    let byproduct: Vec<(f64, f64)> = exact
+        .recipe_rates
+        .iter()
+        .filter_map(|(name, rate)| match &all.get(name.as_str())?.byproduct {
+            Some((resource, amount)) if resource == target => Some((rate * *amount as f64, lead(name))),
+            _ => None,
+        })
+        .collect();
+    if !byproduct.is_empty() {
+        return byproduct;
+    }
+    exact
+        .sold
+        .iter()
+        .filter_map(|(name, &sold)| {
+            let earns = all.get(name.as_str())?.earns(target);
+            (earns > 0.0 && sold > 0.0).then(|| (sold * earns, lead(name)))
+        })
         .collect()
 }
 
@@ -1326,6 +1484,7 @@ pub fn to_production_plan(
                 cycle_time: None,
                 environment: None,
                 busy_units: None,
+                crew: None,
             });
             continue;
         }
@@ -1356,9 +1515,11 @@ pub fn to_production_plan(
                 status: PlanStepStatus::Producing,
                 reason,
                 is_grower: grower,
-                cycle_time: grower.then_some(recipe.production_time),
+                cycle_time: Some(recipe.production_time),
                 environment: if grower { recipe.environment.clone() } else { None },
-                busy_units: (!grower).then(|| (rate * recipe.production_time).min(units as f64)),
+                // A roster member's row says how much of its time it really takes, gathering too.
+                busy_units: (!grower || recipe.crew.is_some()).then(|| (rate * recipe.production_time).min(units as f64)),
+                crew: recipe.crew,
             });
         }
         if owned > used {
@@ -1372,6 +1533,7 @@ pub fn to_production_plan(
                 cycle_time: None,
                 environment: None,
                 busy_units: None,
+                crew: None,
             });
         }
     }
