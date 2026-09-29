@@ -883,6 +883,11 @@ footer {
     margin-top: 2rem;
 }
 
+.footer-note {
+    margin-top: 0.35rem;
+    font-size: 0.75rem;
+}
+
 /* Loading State */
 .loading {
     opacity: 0.5;
