@@ -1158,17 +1158,21 @@ function homelandSvg(layout, homeLevel) {
     const shapes = layout.pieces.flatMap(p => p.members).map(m => {
         const color = layoutColor(m);
         const away = Math.hypot(m.x + m.w / 2 - (layout.storage.x + layout.storage.w / 2), m.y + m.h / 2 - (layout.storage.y + layout.storage.h / 2));
-        const tip = `${m.facility}${m.crop ? `: ${prettyItem(m.crop)}` : m.building && m.mode ? ` (${m.mode})` : ' (idle)'}${m.weight > 0 ? `, ${formatRate(m.weight)} trips/hour, ${away.toFixed(1)} tiles away` : ''}`;
+        const tip = tipAttrs(m.facility, {
+            detail: m.crop ? prettyItem(m.crop) : m.building && m.mode ? m.mode : 'Idle',
+            stats: m.weight > 0 ? `${formatRate(m.weight)} trips/hour · ${away.toFixed(1)} tiles from storage` : '',
+            color,
+        });
         const label = Math.min(m.w, m.h) >= 1.5 ? `<text x="${m.x + m.w / 2}" y="${m.y + m.h / 2}" font-size="${Math.min(0.8, m.w / 3)}">${initialsOf(m.facility)}</text>` : '';
         // Busier pieces are filled more solidly; idle ones are an outline.
         const fill = m.building ? 0.9 : m.weight > 0 ? 0.35 + 0.55 * Math.sqrt(m.weight / maxTrips) : 0.08;
         if (m.building) {
             // As on the building's own map: its mode's color, with the game's symbol for it.
-            return `<g class="env-building"><title>${tip}</title><rect x="${m.x + 0.05}" y="${m.y + 0.05}" width="${m.w - 0.1}" height="${m.h - 0.1}" rx="0.3"
+            return `<g class="env-building" ${tip}><rect x="${m.x + 0.05}" y="${m.y + 0.05}" width="${m.w - 0.1}" height="${m.h - 0.1}" rx="0.3"
                 fill="${color}" fill-opacity="${m.mode ? 1 : 0.25}" stroke="currentColor" stroke-opacity="0.6" stroke-width="0.08" />
                 ${m.mode ? environmentBuildingIcon(m.facility, m.mode, m.x + m.w / 2, m.y + m.h / 2) : ''}</g>`;
         }
-        return `<g><title>${tip}</title><rect x="${m.x + 0.04}" y="${m.y + 0.04}" width="${m.w - 0.08}" height="${m.h - 0.08}" rx="0.2"
+        return `<g class="layout-piece" ${tip}><rect x="${m.x + 0.04}" y="${m.y + 0.04}" width="${m.w - 0.08}" height="${m.h - 0.08}" rx="0.2"
             fill="${color}" fill-opacity="${fill.toFixed(2)}" stroke="${color}" stroke-width="0.06" />${label}</g>`;
     }).join('');
     const coverageShapes = coverage.map(c => {
@@ -1191,7 +1195,7 @@ function homelandSvg(layout, homeLevel) {
         <g class="layout-coverage">${coverageShapes}</g>
         ${shapes}
         <g class="layout-coverage-edges" pointer-events="none">${coverageEdges}</g>
-        <g><title>Storage Unit</title><rect x="${s.x + 0.04}" y="${s.y + 0.04}" width="${s.w - 0.08}" height="${s.h - 0.08}" rx="0.2" class="layout-storage" />
+        <g class="layout-piece" ${tipAttrs('Storage Unit', { detail: 'Where everything is carried' })}><rect x="${s.x + 0.04}" y="${s.y + 0.04}" width="${s.w - 0.08}" height="${s.h - 0.08}" rx="0.2" class="layout-storage" />
         <text x="${s.x + s.w / 2}" y="${s.y + s.h / 2}" font-size="0.8" class="layout-storage-text">SU</text></g>
     </svg>`;
 }
@@ -2952,11 +2956,10 @@ function renderEnvironmentDiagram(layout, mode, building, rows = [], unit = null
     const rects = assigned.map(p => {
         const color = ENVIRONMENT_FACILITY_COLORS[p.facility] || '#888888';
         const size = p.size - inset * 2;
-        const label = p.crop ? `${p.facility}: ${prettyItem(p.crop)}` : p.facility;
         const initials = numbered && p.crop
             ? `<text x="${p.x + p.size / 2}" y="${p.y + p.size / 2}" font-size="${Math.min(0.9, p.size * 0.4)}">${numberOf(`${p.facility}|${p.crop}`)}</text>`
             : '';
-        return `<g class="env-plot"><title>${label}</title>
+        return `<g class="env-plot" ${tipAttrs(p.facility, { detail: p.crop ? prettyItem(p.crop) : '', color })}>
             <rect x="${p.x + inset}" y="${p.y + inset}" width="${size}" height="${size}" rx="0.25" fill="${color}" fill-opacity="0.85" stroke="${color}" stroke-width="0.06" />${initials}</g>`;
     }).join('');
 
@@ -3014,12 +3017,12 @@ function renderEnvironmentDiagram(layout, mode, building, rows = [], unit = null
                       stroke="${tintOf(modes[0])}" stroke-opacity="0.55" stroke-width="0.07" />
                     <rect x="${partnerMin.x}" y="${partnerMin.y}" width="${coverageSize}" height="${coverageSize}" fill="none"
                       stroke="${tintOf(modes[1])}" stroke-opacity="0.55" stroke-width="0.07" />` : ''}
-                <g class="env-building"><title>${building} (${modes ? modes[0] : mode})</title>
+                <g class="env-building" ${tipAttrs(building, { detail: modes ? modes[0] : mode, color: modes ? tintOf(modes[0]) : tint })}>
                     <rect x="0.05" y="0.05" width="${buildingSize - 0.1}" height="${buildingSize - 0.1}" rx="0.3"
                           fill="${modes ? tintOf(modes[0]) : tint}" stroke="currentColor" stroke-opacity="0.6" stroke-width="0.08" />
                     ${environmentBuildingIcon(building, modes ? modes[0] : mode, buildingCenter, buildingCenter)}
                 </g>
-                ${unit && unit.partner ? `<g class="env-building"><title>${unit.partner[0]} (${modes ? modes[1] : mode})</title>
+                ${unit && unit.partner ? `<g class="env-building" ${tipAttrs(unit.partner[0], { detail: modes ? modes[1] : mode, color: tintOf(modes ? modes[1] : mode) })}>
                     <rect x="${dx + 0.05}" y="${dy + 0.05}" width="${partnerSize - 0.1}" height="${partnerSize - 0.1}" rx="0.3"
                           fill="${modes ? tintOf(modes[1]) : tint}" stroke="currentColor" stroke-opacity="0.6" stroke-width="0.08" />
                     ${environmentBuildingIcon(unit.partner[0], modes ? modes[1] : mode, dx + partnerCenter, dy + partnerCenter)}
@@ -3786,3 +3789,96 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 });
+
+// --- Hover tips --------------------------------------------------------------------------
+// One card for every hover tip on the page, shown at once instead of after the browser's delay.
+// Diagram pieces carry `data-tip` (see `tipAttrs`); anything else with a `title` shows it in the
+// same card, the title moved aside so the browser's own tip doesn't show as well.
+const tipCard = document.createElement('div');
+tipCard.className = 'tip-card';
+tipCard.setAttribute('role', 'tooltip');
+tipCard.hidden = true;
+document.body.appendChild(tipCard);
+let tipTarget = null;
+const TIP_SELECTOR = '[data-tip], [data-tip-text], [title]';
+
+// The attributes for a diagram piece's tip: its name, then what it's doing and its numbers.
+function tipAttrs(title, { detail = '', stats = '', color = '' } = {}) {
+    const attr = (name, value) => value ? ` ${name}="${escapeText(value)}"` : '';
+    const label = [title, detail, stats].filter(Boolean).join(', ');
+    return `data-tip="${escapeText(title)}"${attr('data-tip-detail', detail)}${attr('data-tip-stats', stats)}${attr('data-tip-color', color)} aria-label="${escapeText(label)}"`;
+}
+
+function showTip(el) {
+    // A title set since the last hover replaces the one kept aside.
+    if (el.hasAttribute('title')) {
+        const text = el.getAttribute('title');
+        el.removeAttribute('title');
+        el.dataset.tipText = text;
+        if (!el.hasAttribute('aria-label')) el.setAttribute('aria-description', text);
+    }
+    if (!el.dataset.tip && !el.dataset.tipText) return hideTip();
+    const line = (className, text) => {
+        const div = document.createElement('div');
+        div.className = className;
+        div.textContent = text;
+        return tipCard.appendChild(div);
+    };
+    tipCard.replaceChildren();
+    tipCard.classList.toggle('has-swatch', !!el.dataset.tipColor);
+    if (el.dataset.tip) {
+        const title = line('tip-title', el.dataset.tip);
+        if (el.dataset.tipColor) {
+            const swatch = document.createElement('span');
+            swatch.className = 'tip-swatch';
+            swatch.style.background = el.dataset.tipColor;
+            title.prepend(swatch);
+        }
+        if (el.dataset.tipDetail) line('tip-detail', el.dataset.tipDetail);
+        if (el.dataset.tipStats) line('tip-stats', el.dataset.tipStats);
+    } else {
+        line('tip-text', el.dataset.tipText);
+    }
+    tipTarget = el;
+    tipCard.hidden = false;
+}
+
+function hideTip() {
+    tipTarget = null;
+    tipCard.hidden = true;
+}
+
+// Above the point, centered on it and kept on screen; below it where there's no room above.
+function placeTip(x, y, below = y) {
+    const margin = 12;
+    const { width, height } = tipCard.getBoundingClientRect();
+    const left = Math.min(Math.max(margin, x - width / 2), window.innerWidth - width - margin);
+    const top = y - height - 14 >= margin ? y - height - 14 : below + 18;
+    tipCard.style.left = `${left}px`;
+    tipCard.style.top = `${top}px`;
+}
+
+document.addEventListener('pointerover', (e) => {
+    const el = e.target.closest?.(TIP_SELECTOR);
+    if (!el) return hideTip();
+    if (el !== tipTarget || el.hasAttribute('title')) showTip(el);
+    if (tipTarget) placeTip(e.clientX, e.clientY);
+});
+document.addEventListener('pointermove', (e) => {
+    if (!tipTarget) return;
+    if (!tipTarget.isConnected) return hideTip();
+    placeTip(e.clientX, e.clientY);
+}, { passive: true });
+// A tap's tip stays until the next tap; a mouse's goes when it leaves.
+document.addEventListener('pointerout', (e) => {
+    if (e.pointerType !== 'touch' && tipTarget && !tipTarget.contains(e.relatedTarget)) hideTip();
+});
+document.addEventListener('focusin', (e) => {
+    const el = e.target.closest?.(TIP_SELECTOR);
+    if (!el || !e.target.matches(':focus-visible')) return;
+    showTip(el);
+    const box = el.getBoundingClientRect();
+    if (tipTarget) placeTip(box.left + box.width / 2, box.top, box.bottom);
+});
+document.addEventListener('focusout', hideTip);
+window.addEventListener('scroll', hideTip, { passive: true, capture: true });

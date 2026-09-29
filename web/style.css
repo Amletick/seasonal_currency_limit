@@ -825,9 +825,14 @@ tbody tr:first-child td {
     pointer-events: none;
 }
 
-.env-plot:hover rect {
+.env-plot:hover rect,
+.layout-piece:hover > rect {
     fill-opacity: 1;
     stroke: currentColor;
+}
+
+.env-building:hover > rect {
+    stroke-opacity: 1;
 }
 
 .env-legend {
@@ -2736,4 +2741,69 @@ tr:hover .skip-row,
 /* A roster that can't make a plan shows only its own card. */
 #results-content.roster-only > :not(#aniimo-card) {
     display: none !important;
+}
+
+/* Hover tips (see "Hover tips" in app.js). */
+.tip-card {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 1000;
+    max-width: min(300px, calc(100vw - 24px));
+    padding: 0.5rem 0.7rem;
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    font-size: 0.8rem;
+    line-height: 1.4;
+    pointer-events: none;
+}
+
+.tip-card:not([hidden]) {
+    animation: tip-in 90ms ease-out;
+}
+
+@keyframes tip-in {
+    from {
+        opacity: 0;
+        transform: translateY(3px);
+    }
+}
+
+.tip-title {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-weight: 600;
+}
+
+.tip-swatch {
+    flex: none;
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 3px;
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+}
+
+.tip-detail {
+    margin-top: 0.1rem;
+}
+
+.tip-stats {
+    margin-top: 0.15rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+}
+
+.tip-card.has-swatch .tip-detail,
+.tip-card.has-swatch .tip-stats {
+    padding-left: 1.1rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .tip-card:not([hidden]) {
+        animation: none;
+    }
 }
