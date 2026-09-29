@@ -2694,6 +2694,7 @@ tr:hover .skip-row,
 }
 
 .roster-card {
+    min-width: 0;
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 0.6rem 0.75rem;
@@ -2709,6 +2710,7 @@ tr:hover .skip-row,
 
 .roster-name {
     flex: 1;
+    width: 0;
     min-width: 0;
     background: transparent;
     border: 1px solid transparent;

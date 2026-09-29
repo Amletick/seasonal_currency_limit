@@ -1435,10 +1435,15 @@ function attachRosterHandlers() {
         } else if (action === 'add') {
             roster.push(newRosterAniimo());
         } else if (action === 'from-best' && lastBestTeam) {
-            roster = lastBestTeam.map(g => newRosterAniimo(
-                { [g.ability]: g.level },
-                PERSONALITY_PAIRS.map(pair => pair.names.find(name => g.personalities?.has(name)) || pair.names[0]),
-            )).map((aniimo, k) => ({ ...aniimo, count: lastBestTeam[k].count }));
+            // Alike Aniimo share a card, with how many there are.
+            const cards = new Map();
+            lastBestTeam.forEach(g => {
+                const personalities = PERSONALITY_PAIRS.map(pair => pair.names.find(name => g.personalities?.has(name)) || pair.names[0]);
+                const key = `${g.ability}|${g.level}|${personalities.join()}`;
+                if (cards.has(key)) cards.get(key).count += g.count;
+                else cards.set(key, { ...newRosterAniimo({ [g.ability]: g.level }, personalities), count: g.count });
+            });
+            roster = [...cards.values()];
         } else {
             return;
         }
@@ -2660,15 +2665,11 @@ function renderAniimoSummary(plan) {
         .join('');
     const haulingRow = `<tr><td data-label="Aniimo">${abilityTag('Hauling')} any level</td><td data-label="How many">1+</td><td data-label="Busy on average">?</td><td data-label="Where">Carries produce to storage. How much work this is isn't known yet; add more if produce piles up.</td></tr>`;
 
-    let capNote = '';
+    // The count above says how many; this is only said when it's more than the homeland holds.
     const cap = homelandHolds;
-    if (cap && total > cap) {
-        capNote = `<p class="hint small">That's ${total} Aniimo, more than the ${cap} an RV level ${selectedHomeLevel()} homeland holds.</p>`;
-    } else if (cap) {
-        capNote = `<p class="hint small">That's ${total} Aniimo; an RV level ${selectedHomeLevel()} homeland holds ${cap}.</p>`;
-    } else {
-        capNote = `<p class="hint small">That's ${total} Aniimo.</p>`;
-    }
+    const capNote = cap && total > cap
+        ? `<p class="hint small">That's ${total} Aniimo, more than the ${cap} an RV level ${selectedHomeLevel()} homeland holds.</p>`
+        : '';
     const have = document.getElementById('aniimo-count-have');
     const of = document.getElementById('aniimo-count-of');
     const count = document.getElementById('aniimo-count');
@@ -3906,10 +3907,14 @@ window.addEventListener('scroll', hideTip, { passive: true, capture: true });
 
 // The Storage Unit's flow lines show while it's hovered (see `homelandSvg`).
 document.addEventListener('pointerover', (e) => {
-    const svg = e.target.closest?.('.layout-svg');
-    if (svg) svg.classList.toggle('showing-flows', !!e.target.closest('.layout-storage-unit'));
+    const unit = e.target.closest?.('.layout-storage-unit');
+    document.querySelectorAll('.layout-svg.showing-flows').forEach(svg => {
+        if (!svg.contains(unit)) svg.classList.remove('showing-flows');
+    });
+    unit?.closest('.layout-svg')?.classList.add('showing-flows');
 });
+// As with tips, a tap's lines stay until the next tap.
 document.addEventListener('pointerout', (e) => {
     const svg = e.target.closest?.('.layout-svg');
-    if (svg && !svg.contains(e.relatedTarget)) svg.classList.remove('showing-flows');
+    if (svg && e.pointerType !== 'touch' && !svg.contains(e.relatedTarget)) svg.classList.remove('showing-flows');
 });
