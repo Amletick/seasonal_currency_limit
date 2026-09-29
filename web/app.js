@@ -471,6 +471,7 @@ function loadInputsFromStorage(data) {
             el.value = data[id];
         }
     });
+    levelUpTargetChosen = 'level-up-target' in data;
 }
 
 // Auto-save on every change to a persisted static field (facility tier inputs save themselves;
@@ -562,8 +563,18 @@ function renderSimpleSummary() {
         <div class="chip-grid">${moduleChips}</div>`;
 }
 
+// Whether the player has picked Advanced mode's level-up target; until then it follows the RV
+// level the facilities came from.
+let levelUpTargetChosen = false;
+
+function followLevelUpTarget(homeLevel) {
+    const select = document.getElementById('level-up-target');
+    if ([...select.options].some(o => o.value === String(homeLevel + 1))) select.value = String(homeLevel + 1);
+}
+
 function applyConfigMode() {
     const simple = isSimpleMode();
+    if (!simple && !levelUpTargetChosen) followLevelUpTarget(selectedHomeLevel());
     document.getElementById('simple-config').style.display = simple ? 'block' : 'none';
     document.getElementById('advanced-config').style.display = simple ? 'none' : 'block';
     if (simple) renderSimpleSummary();
@@ -581,6 +592,8 @@ function fillAdvancedFrom(homeLevel) {
     document.getElementById('kitchen-module-level').value = modules.kitchen_module;
     document.getElementById('resource-detector-level').value = modules.resource_detector;
     document.getElementById('crafting-module-level').value = modules.crafting_module;
+    followLevelUpTarget(homeLevel);
+    renderStrategy();
     saveInputsToStorage();
 }
 
@@ -1042,8 +1055,29 @@ function homelandPieces(plan, input) {
         pieces.push({ cluster: true, buildings, plots, planned });
     });
 
+    // Recipes taking turns on the same units (the Bench's and Kiln's tiers) share them: as many
+    // units as their busy time together needs, each running every tier in turn at its share.
+    const takesTurns = step => step.status === 'producing' && !!recipeIndex.find(r => r.name === step.item_name)?.turns;
+    const turnGroups = new Map();
+    steps.filter(takesTurns).forEach(step => turnGroups.set(step.facility, [...(turnGroups.get(step.facility) || []), step]));
+    turnGroups.forEach((rows, facility) => {
+        const footprint = FACILITY_FOOTPRINTS[facility];
+        if (!footprint) {
+            unplaced.add(facility);
+            return;
+        }
+        const busy = rows.reduce((sum, r) => sum + (r.busy_units ?? r.facility_count), 0);
+        const n = Math.max(1, Math.ceil(busy - 1e-6));
+        const jobs = rows.filter(r => r.cycle_time > 0).map(r => ({ item: r.item_name, cycle: r.cycle_time, rate: (r.busy_units ?? r.facility_count) / r.cycle_time / n }));
+        const weight = jobs.reduce((sum, j) => sum + j.rate * 3600, 0);
+        for (let i = 0; i < n; i++) {
+            pieces.push({ members: [{ x: 0, y: 0, w: footprint[0], h: footprint[1], weight, jobs, cycle: jobs[0]?.cycle, facility, crop: jobs[0]?.item ?? null, sensitive: false }] });
+        }
+        count(facility, n);
+    });
+
     // Everything else, one unit at a time; environment crops no map took count here too.
-    steps.forEach(step => {
+    steps.filter(step => !takesTurns(step)).forEach(step => {
         let n = step.facility_count;
         if (step.environment && step.status === 'producing') {
             const key = `${step.facility}|${step.item_name}`;
@@ -1175,7 +1209,7 @@ function renderHomelandLayout(plan) {
         document.getElementById('layout-summary').textContent = `${trips > 0
             ? `${formatNumber(Math.round(trips))} trips/hour to the Storage Unit, ${(walked / trips).toFixed(1)} tiles each on average, in the ${cells.length} plot${cells.length === 1 ? '' : 's'} open at RV ${homeLevel}.`
             : 'Nothing in this plan is carried to the Storage Unit.'}${notes ? ` ${notes}` : ''}`;
-        lastLayout = { layout, homeLevel, plan };
+        lastLayout = { layout, homeLevel };
         drawLayout(lastLayout);
         setStep('layout', 'done');
     };
@@ -1232,7 +1266,7 @@ function homelandSvg(layout, homeLevel) {
         const color = layoutColor(m);
         const away = Math.hypot(m.x + m.w / 2 - (layout.storage.x + layout.storage.w / 2), m.y + m.h / 2 - (layout.storage.y + layout.storage.h / 2));
         const tip = tipAttrs(m.facility, {
-            detail: m.crop ? prettyItem(m.crop) : m.building && m.mode ? m.mode : 'Idle',
+            detail: m.jobs ? m.jobs.map(j => prettyItem(j.item)).join(', ') : m.crop ? prettyItem(m.crop) : m.building && m.mode ? m.mode : 'Idle',
             stats: m.weight > 0 ? `${formatRate(m.weight)} trips/hour · ${away.toFixed(1)} tiles from storage` : '',
             color,
         });
@@ -1284,24 +1318,28 @@ function homelandSvg(layout, homeLevel) {
 
 // --- Deliveries ------------------------------------------------------------------------
 // The layout plays its homeland out in sped-up game time, from the moment everything is set up.
-// Every finished batch is carried to the Storage Unit, with its byproduct, and adds to what's
-// there; a recipe starts a batch only once the Storage Unit has all it takes, and takes it out.
-// Each unit also keeps to the plan's pace for it, so it doesn't take more than its share of what
-// others need. A ring on each shows its batch, amber while it waits for materials. What isn't
-// modeled: the walk to the Storage Unit and back (dots walk at a fixed pace), and which of two
-// recipes wanting the same thing gets it first (they take turns at random).
+// Every finished batch goes to the Storage Unit, with its byproduct, and adds to what's there; a
+// recipe starts a batch only once the Storage Unit has all it takes, and takes it out. Each unit
+// also keeps to the plan's pace for each recipe it runs, so it doesn't take more than its share
+// of what others need; a Bench or Kiln runs its tiers in turn. A ring on each shows its batch,
+// amber while it waits for materials. What isn't modeled: carrying takes no time (the dots walk
+// at a fixed pace just to show it), and which of two recipes wanting the same thing gets it first
+// (they take turns at random).
 
-// Every piece has sent its first batch within about this many real seconds, however long that
-// takes in game (at least a minute a second, at most an hour).
+// Roughly how many real seconds the build-up takes, however long it is in game (at least a
+// minute a second, at most an hour); a guess from first batches, not the whole wait.
 const SIM_BUILD_UP = 10;
 // Tiles a second a delivery walks, in real time.
 const SIM_PACE = 4;
 // Game seconds per step of the simulation.
 const SIM_STEP = 2;
+// Real seconds between two dots on the same line, at the least.
+const SIM_DOT_GAP = 0.12;
 let layoutSim = null;
 
-// Each piece carried to the Storage Unit: its line and ring, what it makes and how long a batch
-// takes, and its pace in the plan (batches a second).
+// Each piece carried to the Storage Unit: its line and ring, and its jobs: what it makes, how
+// long a batch takes and its pace in the plan (batches a second). Most pieces have one; a Bench
+// or Kiln unit has one per tier it takes turns on (see `homelandPieces`).
 function layoutFlows(layout) {
     const s = layout.storage;
     const x2 = s.x + s.w / 2;
@@ -1313,7 +1351,7 @@ function layoutFlows(layout) {
         return {
             x1, y1, x2, y2, length: Math.hypot(x2 - x1, y2 - y1),
             ring, rx: m.x + m.w - ring - 0.12, ry: m.y + ring + 0.12,
-            item: m.crop, cycle: m.cycle, rate: m.weight / 3600,
+            jobs: m.jobs || [{ item: m.crop, cycle: m.cycle, rate: m.weight / 3600 }],
         };
     });
 }
@@ -1335,7 +1373,7 @@ function recipeTerms(name) {
 // works it out (see `item_lead_time` in optimizer.rs). Only sets the simulation's speed.
 function firstBatchTimes(flows) {
     const batch = new Map();
-    flows.forEach(f => batch.set(f.item, Math.min(batch.get(f.item) ?? Infinity, f.cycle)));
+    flows.flatMap(f => f.jobs).forEach(j => batch.set(j.item, Math.min(batch.get(j.item) ?? Infinity, j.cycle)));
     const makers = new Map();
     batch.forEach((_, name) => {
         const terms = recipeTerms(name);
@@ -1345,6 +1383,7 @@ function firstBatchTimes(flows) {
     const first = (name, depth = 0) => {
         if (depth > 8) return 0;
         if (!known.has(name)) {
+            known.set(name, 0);
             const waits = recipeTerms(name).takes
                 .map(([ingredient]) => makers.get(ingredient))
                 .filter(Boolean)
@@ -1369,12 +1408,16 @@ function startLayoutSim(svg, flows, stock) {
         return;
     }
     const first = firstBatchTimes(flows);
-    const latest = Math.max(...flows.map(f => first(f.item)));
+    const latest = Math.max(...flows.flatMap(f => f.jobs).map(j => first(j.item)));
     const speed = Math.min(3600, Math.max(60, latest / SIM_BUILD_UP));
-    const units = flows.map((flow, k) => ({ flow, terms: recipeTerms(flow.item), line: lines[k], ring: rings[k], fill: rings[k]?.querySelector('.ring-fill') }));
+    const units = flows.map((flow, k) => ({
+        flow,
+        jobs: flow.jobs.map(job => ({ ...job, terms: recipeTerms(job.item) })),
+        line: lines[k], ring: rings[k], fill: rings[k]?.querySelector('.ring-fill'),
+    }));
     // Something no piece here makes, and no stock covers, is taken as always there, so a recipe
     // using it isn't held up forever.
-    const made = new Set(units.flatMap(u => [u.terms.makes, u.terms.byproduct?.[0]].filter(Boolean)));
+    const made = new Set(units.flatMap(u => u.jobs).flatMap(j => [j.terms.makes, j.terms.byproduct?.[0]].filter(Boolean)));
     const sim = { svg, units, speed, stock, made, layer: svg.querySelector('.layout-dots'), dots: [], frame: 0, visible: true };
     layoutSim = sim;
     document.getElementById('layout-clock').title = `Game time since everything was set up, at ${formatNumber(Math.round(speed))}× speed`;
@@ -1389,11 +1432,15 @@ function startLayoutSim(svg, flows, stock) {
 
 function resetLayoutSim(sim) {
     sim.game = 0;
+    sim.real = 0;
     sim.last = null;
     sim.store = new Map(sim.stock);
     sim.units.forEach(unit => {
-        unit.pace = 1;
+        unit.jobs.forEach(job => { job.pace = 1; });
+        unit.job = null;
         unit.until = null;
+        unit.free = 0;
+        unit.lastDot = -Infinity;
         unit.line?.classList.remove('live');
         showRing(unit, 0, false);
     });
@@ -1410,12 +1457,30 @@ function stopLayoutSim() {
     layoutSim = null;
 }
 
-// Whether the Storage Unit has what `unit` needs for a batch.
-function simHas(sim, unit) {
-    return unit.terms.takes.every(([item, n]) => !sim.made.has(item) && !sim.stock.has(item) || (sim.store.get(item) || 0) >= n);
+// Whether the Storage Unit has what `job` needs for a batch.
+function simHas(sim, job) {
+    return job.terms.takes.every(([item, n]) => !sim.made.has(item) && !sim.stock.has(item) || (sim.store.get(item) || 0) >= n);
+}
+
+// Whether `job` is due a batch by its pace. Pace may run a little over one, so a batch noticed at
+// the end of a step doesn't lose the time since.
+const simDue = job => job.pace >= 1 - 1e-9;
+
+// Starts the first job of `unit` that's due and has its materials, at game time `at`.
+function simStart(sim, unit, at) {
+    const job = unit.jobs.find(j => simDue(j) && simHas(sim, j));
+    if (!job) return;
+    job.terms.takes.forEach(([item, n]) => {
+        if (sim.made.has(item) || sim.stock.has(item)) sim.store.set(item, (sim.store.get(item) || 0) - n);
+    });
+    job.pace -= 1;
+    unit.job = job;
+    unit.started = at;
+    unit.until = at + job.cycle;
 }
 
 function stepLayoutSim(sim, dt) {
+    const from = sim.game;
     sim.game += dt;
     // Recipes wanting the same thing take turns at random.
     const order = [...sim.units];
@@ -1424,29 +1489,28 @@ function stepLayoutSim(sim, dt) {
         [order[i], order[j]] = [order[j], order[i]];
     }
     for (const unit of order) {
-        unit.pace = Math.min(1, unit.pace + unit.flow.rate * dt);
-        if (unit.until != null && sim.game >= unit.until) {
-            const { makes, byproduct } = unit.terms;
-            sim.store.set(makes, (sim.store.get(makes) || 0) + unit.terms.yield);
+        unit.jobs.forEach(job => { job.pace = Math.min(1 + job.rate * SIM_STEP, job.pace + job.rate * dt); });
+        // Each batch finished within the step is delivered then, and the next starts right away.
+        while (unit.until != null && unit.until <= sim.game) {
+            const { makes, byproduct, yield: amount } = unit.job.terms;
+            sim.store.set(makes, (sim.store.get(makes) || 0) + amount);
             if (byproduct) sim.store.set(byproduct[0], (sim.store.get(byproduct[0]) || 0) + byproduct[1]);
             deliver(sim, unit, (sim.game - unit.until) / sim.speed);
+            unit.free = unit.until;
             unit.until = null;
+            unit.job = null;
+            simStart(sim, unit, unit.free);
         }
-        if (unit.until == null && unit.pace >= 1 - 1e-9 && simHas(sim, unit)) {
-            unit.terms.takes.forEach(([item, n]) => {
-                if (sim.made.has(item) || sim.stock.has(item)) sim.store.set(item, (sim.store.get(item) || 0) - n);
-            });
-            unit.pace -= 1;
-            unit.started = sim.game;
-            unit.until = sim.game + unit.flow.cycle;
-        }
+        if (unit.until == null) simStart(sim, unit, Math.max(from, unit.free));
     }
 }
 
 function deliver(sim, unit, age) {
     unit.line?.classList.add('live');
     const walk = unit.flow.length / SIM_PACE;
-    if (age >= walk) return;
+    // A line busier than the eye can follow shows only some of its dots.
+    if (age >= walk || sim.real - age - unit.lastDot < SIM_DOT_GAP) return;
+    unit.lastDot = sim.real - age;
     const el = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
     el.setAttribute('r', '0.2');
     el.setAttribute('class', 'layout-dot');
@@ -1468,9 +1532,10 @@ function tickLayoutSim(sim, now) {
     sim.last = now;
     const until = sim.game + dt * sim.speed;
     while (sim.game < until - 1e-9) stepLayoutSim(sim, Math.min(SIM_STEP, until - sim.game));
+    sim.real += dt;
     sim.units.forEach(unit => {
         const busy = unit.until != null;
-        showRing(unit, busy ? Math.min(1, (sim.game - unit.started) / unit.flow.cycle) : 0, !busy && unit.pace >= 1 - 1e-9);
+        showRing(unit, busy ? Math.min(1, (sim.game - unit.started) / unit.job.cycle) : 0, !busy && unit.jobs.some(simDue));
     });
     sim.dots = sim.dots.filter(dot => {
         dot.age += dt;
@@ -1866,7 +1931,7 @@ function recipeLabel(recipe) {
 async function loadRecipeIndex() {
     try {
         recipeIndex = JSON.parse(await callWorker('get_all_items'))
-            .map(r => ({ name: r.name, facility: r.facility, cost: r.cost || 0, seasonSeedCost: r.season_seed_cost || 0, environment: r.environment || null, jobs: r.jobs || [], ingredients: r.raw_materials || [], amounts: r.required_amount || [], yieldAmount: r.yield_amount || 1, byproduct: r.byproduct_item || null, byproductAmount: r.byproduct?.[1] || 0 }))
+            .map(r => ({ name: r.name, facility: r.facility, cost: r.cost || 0, seasonSeedCost: r.season_seed_cost || 0, environment: r.environment || null, jobs: r.jobs || [], ingredients: r.raw_materials || [], amounts: r.required_amount || [], yieldAmount: r.yield_amount || 1, byproduct: r.byproduct_item || null, byproductAmount: r.byproduct?.[1] || 0, turns: r.sell_currency === 'none' }))
             .sort((a, b) => a.facility.localeCompare(b.facility) || a.name.localeCompare(b.name));
         document.getElementById('skip-options').innerHTML =
             recipeIndex.map(r => `<option value="${recipeLabel(r)}"></option>`).join('');
@@ -2257,7 +2322,10 @@ function renderStrategy() {
 function attachStrategyHandlers() {
     document.getElementById('strategy-level-up').addEventListener('change', renderStrategy);
     document.getElementById('strategy-priorities').addEventListener('change', renderStrategy);
-    document.getElementById('level-up-target').addEventListener('change', renderStrategy);
+    document.getElementById('level-up-target').addEventListener('change', () => {
+        levelUpTargetChosen = true;
+        renderStrategy();
+    });
     const grid = document.getElementById('level-up-stock-grid');
     grid.addEventListener('input', (e) => {
         const name = e.target.dataset.stock;
@@ -3481,7 +3549,7 @@ function updateRateDisplay(pickUnit = false) {
         if (select.closest('#priority-rates')) rateLine.appendChild(select);
         const label = CURRENCY_LABELS[lastPlan.currency] || lastPlan.currency;
         const points = lastPlan.season_points > 1e-12 ? ` + ${formatRate(lastPlan.season_points * multiplier)} ${SEASON.points}` : '';
-        document.getElementById('plan-rate').textContent = `${formatNumber(lastPlan.rate_per_second * multiplier)} ${label}${points}${suffix}`;
+        document.getElementById('plan-rate').textContent = `${formatRate(lastPlan.rate_per_second * multiplier)} ${label}${points}${suffix}`;
         document.getElementById('rate-label').textContent = 'Your Rate';
         rateLine.style.display = '';
         table.innerHTML = '';
@@ -3713,6 +3781,11 @@ async function runFindPlan() {
         finishSolveSteps();
         plansBySetup[bestSetup] = JSON.parse(bestJson);
         showSelectedPlan();
+        // With no plan there's nothing to lay out or improve on.
+        if (!plansBySetup[bestSetup].success && progress) {
+            progress.steps.forEach(s => { if ((s.key === 'layout' || s.key === 'improve') && s.state === 'pending') s.state = 'skipped'; });
+            renderProgress();
+        }
 
         // The Minimum setup solves after Best is already on screen; switching to it before it's
         // done shows a short "still working" note until it arrives.

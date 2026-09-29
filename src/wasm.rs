@@ -1959,9 +1959,7 @@ pub fn get_all_items() -> String {
             verified: !unverified.iter().any(|(name, facility)| *name == item.name && *facility == item.facility),
             jobs: grower_steps.get(&item.name).iter().map(|s| (s.step.clone(), s.ability.clone(), s.min_level)).collect(),
             environment: item.environment.clone(),
-            byproduct_item: item.byproduct.as_ref().and_then(|(resource, _)| {
-                crate::models::BYPRODUCT_ITEMS.iter().find(|(name, _)| name == resource).map(|(_, item)| item.to_string())
-            }),
+            byproduct_item: item.byproduct.as_ref().and_then(|(resource, _)| crate::models::byproduct_item(resource)).map(str::to_string),
             season: item.season.is_some(),
             season_seed_cost: item.season.map(|s| s.seed_cost).filter(|&cost| cost > 0.0),
         })
