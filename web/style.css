@@ -2637,3 +2637,98 @@ tr:hover .skip-row,
     stroke-opacity: 0.3;
     stroke-width: 0.12;
 }
+
+/* My Aniimo: one card per kind of Aniimo the player has. */
+.roster-editor {
+    display: grid;
+    gap: 0.6rem;
+    margin-top: 0.5rem;
+}
+
+.roster-card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.6rem 0.75rem;
+    display: grid;
+    gap: 0.45rem;
+}
+
+.roster-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.roster-name {
+    flex: 1;
+    min-width: 0;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 0.2rem 0.35rem;
+    color: var(--text);
+    font-weight: 600;
+}
+
+.roster-name:hover,
+.roster-name:focus {
+    border-color: var(--border);
+}
+
+.roster-count {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.roster-count button,
+.roster-x {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-muted);
+    cursor: pointer;
+    min-width: 1.6rem;
+    height: 1.6rem;
+    line-height: 1;
+}
+
+.roster-count button:hover,
+.roster-x:hover {
+    color: var(--text);
+}
+
+.roster-abilities,
+.roster-personalities {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.6rem;
+}
+
+.roster-ability {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.roster-ability .roster-x {
+    min-width: 1.3rem;
+    height: 1.3rem;
+    font-size: 0.7rem;
+}
+
+.roster-add-ability {
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    padding: 0.2rem 0.4rem;
+}
+
+.roster-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}

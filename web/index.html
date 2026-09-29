@@ -181,13 +181,13 @@
                             <div class="tabs compact" role="radiogroup" aria-label="Aniimo setup">
                                 <label title="The best Aniimo you have, with each facility's personality"><input type="radio" name="aniimo-setup" id="aniimo-best" value="best" checked> Best</label>
                                 <label title="The lowest ability level each recipe accepts: the least you can get by with"><input type="radio" name="aniimo-setup" id="aniimo-minimum" value="minimum"> Minimum</label>
-                                <label title="Say which Aniimo works each facility"><input type="radio" name="aniimo-setup" id="aniimo-custom" value="custom"> Custom</label>
+                                <label title="Plan with the Aniimo you actually have"><input type="radio" name="aniimo-setup" id="aniimo-custom" value="custom"> My Aniimo</label>
                             </div>
                         </div>
                         <div class="aniimo-setup-panel" id="aniimo-setup-panel">
                             <p class="hint small" id="aniimo-setup-hint"></p>
                             <div class="ability-levels" id="ability-levels"></div>
-                            <div class="facility-workers" id="facility-workers" hidden></div>
+                            <div class="roster-editor" id="roster-editor" hidden></div>
                         </div>
                         <p class="aniimo-count" id="aniimo-count" hidden><span id="aniimo-count-have">0</span><span class="aniimo-count-of" id="aniimo-count-of"></span></p>
                         <p class="collapsed-summary" id="aniimo-collapsed-summary"></p>
@@ -196,7 +196,7 @@
                         <div id="aniimo-body" hidden>
                             <details class="explain">
                                 <summary>How the team is worked out</summary>
-                                <p><strong>Best</strong> puts the best Aniimo you said you have on every job, with the facility's personality. Aniimo level up by ability, so pick the level you have of each under the tabs above. <strong>Custom</strong> goes facility by facility, for a roster where the level is there but the personality isn't. <strong>Minimum</strong> uses the lowest ability level each recipe accepts, with no personality bonus: slower, but it's what you need at the very least. An Aniimo is fastest on recipes below its level: a level-4 one works a processor's level-1 recipe at 500% and a level-2 one at 400%, but a Well's level-1 recipe at 250%. The plan below follows whichever is picked.</p>
+                                <p><strong>Best</strong> puts the best Aniimo you said you have on every job, with the facility's personality. Aniimo level up by ability, so pick the level you have of each under the tabs above. <strong>My Aniimo</strong> plans with the Aniimo you actually have: list each with its homeland abilities, their levels and its four personalities. Each works whatever its abilities allow for as many hours as it has, so one level-4 Earth Aniimo covers what it can and the plan makes do with the rest. <strong>Minimum</strong> uses the lowest ability level each recipe accepts, with no personality bonus: slower, but it's what you need at the very least. An Aniimo is fastest on recipes below its level: a level-4 one works a processor's level-1 recipe at 500% and a level-2 one at 400%, but a Well's level-1 recipe at 250%. The plan below follows whichever is picked.</p>
                                 <p>Each Aniimo takes on as much as it can: any job needing its ability at or below its level, for as many hours as it has, so long as no two of those facilities want opposite personalities. Work that takes any level, like the Farmland and Woodland jobs, fills whatever time is left over. Facilities with a resident Aniimo (Sandcastle, Dewy House and the like) need one each, and so does each Heat Furnace (Fire), Cooling Unit (Ice) and Sunlamp (Light) in use. An Aniimo carries four personalities at once, one from each opposed pair, shown as letters over its portrait: Instinctive or Energetic (I/E), Nimble or Practical (N/S), Faithful or Tenacious (F/T), Playful or Judicious (P/J). So one can hold the bonus at up to four facilities, never at two wanting opposites, and only while it has hours to spare. The team below is the best combination that allows, and each Aniimo lists every personality it has to have. Whether an environment building's Aniimo level or personality matters isn't known yet. Each recipe's minimum ability level and the Farmland/Woodland jobs haven't been checked in game yet.</p>
                             </details>
                             <div id="aniimo-summary"></div>

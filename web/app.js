@@ -3,7 +3,7 @@
 import {
     FACILITIES, FACILITY_CATEGORIES, FACILITY_CATEGORY_BY_NAME, FACILITY_FOOTPRINTS, HOMELAND_PLOTS, HOMELAND_PLOT_SIZE,
     MAX_HOME_LEVEL, ANIIMO_MAX, simpleSetup,
-    LEVEL_UP_COSTS, LEVEL_UP_CHAINS, SPECIAL_RECIPES, SEASON, ANIIPOD_TIERS, personalityLetter, opposedPersonality,
+    LEVEL_UP_COSTS, LEVEL_UP_CHAINS, SPECIAL_RECIPES, SEASON, ANIIPOD_TIERS, PERSONALITY_PAIRS, personalityLetter, opposedPersonality,
 } from './facility-config.js';
 
 let wasmReady = false;
@@ -116,19 +116,11 @@ let plansBySetup = {};
 let planRunId = 0;
 
 // A name for the setup on screen, spelling out what was said so each distinct one is worked out
-// and kept apart; the levels themselves travel in `aniimo_levels` and `workers`.
+// and kept apart; the levels themselves travel in `aniimo_levels`, the roster in `roster`.
 function selectedAniimoSetup() {
     const tab = selectedSetupTab();
     if (tab === 'minimum') return 'minimum';
-    if (tab === 'custom') {
-        const said = workedFacilities()
-            .map(name => {
-                const worker = facilityWorker(name);
-                return `${name}${worker.suitability}${worker.personality_bonus ? 'p' : ''}`;
-            })
-            .join('|');
-        return `custom:${said}`;
-    }
+    if (tab === 'custom') return `roster:${JSON.stringify(roster.map(({ name, ...aniimo }) => aniimo))}`;
     return `best:${levelledAbilities().map(a => `${a}${bestAniimoLevel(a)}`).join(',')}`;
 }
 
@@ -399,7 +391,7 @@ function initFacilityTiers(data) {
 }
 
 function saveInputsToStorage() {
-    const data = { facilityTiers, levelUpStock, skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder, aniimoLevels, aniimoByFacility };
+    const data = { facilityTiers, levelUpStock, skippedRecipes: [...skippedRecipes], unlockedSpecial: [...unlockedSpecial], priorities: priorityOrder, aniimoLevels, roster };
     getPersistedFieldIds().forEach(id => {
         const el = document.getElementById(id);
         if (!el) return;
@@ -429,7 +421,16 @@ function loadInputsFromStorage(data) {
         data['strategy-priorities'] = true;
     }
     if (data.aniimoLevels && typeof data.aniimoLevels === 'object') aniimoLevels = { ...data.aniimoLevels };
-    if (data.aniimoByFacility && typeof data.aniimoByFacility === 'object') aniimoByFacility = { ...data.aniimoByFacility };
+    if (Array.isArray(data.roster)) {
+        roster = data.roster
+            .filter(a => a && typeof a === 'object' && a.abilities && typeof a.abilities === 'object')
+            .map(a => ({
+                name: typeof a.name === 'string' ? a.name : '',
+                count: Math.max(1, Number(a.count) || 1),
+                abilities: Object.fromEntries(Object.entries(a.abilities).filter(([, l]) => l >= 1 && l <= 4).map(([ab, l]) => [ab, Number(l)])),
+                personalities: PERSONALITY_PAIRS.map((pair, p) => pair.names.includes(a.personalities?.[p]) ? a.personalities[p] : pair.names[0]),
+            }));
+    }
     getPersistedFieldIds().forEach(id => {
         if (!(id in data)) return;
         const el = document.getElementById(id);
@@ -697,18 +698,6 @@ function improvementCandidates(base, setup) {
                     kind: 'Aniimo', group: `aniimo:${ability}`, family: `${ability} Aniimo`, level: next,
                     label: `${ability} Aniimo Lv ${next}`,
                     input: { ...base, aniimo_levels: { ...base.aniimo_levels, [ability]: next } },
-                });
-            }
-        }
-    } else if (setup.startsWith('custom')) {
-        for (const [name, worker] of Object.entries(base.workers)) {
-            const ability = FACILITIES.find(f => f.name === name)?.ability;
-            if (!ability || !owns(name)) continue;
-            for (const next of levelsAbove(worker.suitability, defaultLevelFor(ability))) {
-                candidates.push({
-                    kind: 'Aniimo', group: `worker:${name}`, family: `${name} Aniimo`, level: next,
-                    label: `${name} Aniimo Lv ${next}`,
-                    input: { ...base, workers: { ...base.workers, [name]: { ...worker, suitability: next } } },
                 });
             }
         }
@@ -1313,6 +1302,184 @@ function renderProgress() {
     }).join('')}</ol>`;
 }
 
+// --- My Aniimo -------------------------------------------------------------------------
+// The Aniimo the player actually has, card by card (see `Crew` in models.rs): each card's homeland
+// abilities with their levels, its four personalities (one from each pair) and how many are alike.
+// The plan shares their hours out, so one level-4 Earth Aniimo covers what it can and no more.
+
+let roster = [];
+// The Best plan's team, to start a roster from (see `renderAniimoSummary`).
+let lastBestTeam = null;
+
+function newRosterAniimo(abilities = {}, personalities = null) {
+    return { name: '', count: 1, abilities, personalities: personalities || PERSONALITY_PAIRS.map(pair => pair.names[0]) };
+}
+
+// Facilities whose Aniimo lives there: every Aniimo Materials facility.
+const RESIDENT_FACILITIES = new Set(FACILITIES.filter(f => f.category === 'Aniimo Materials').map(f => f.name));
+
+// The roster for the solver (see `JsRoster` in wasm.rs).
+function rosterPayload() {
+    return {
+        members: roster.map(a => ({ count: a.count, abilities: a.abilities, personalities: a.personalities })),
+        residents: [...RESIDENT_FACILITIES],
+        environment: ENVIRONMENT_BUILDING_ABILITY,
+        personalities: Object.fromEntries(FACILITIES.filter(f => f.personality).map(f => [f.name, f.personality])),
+    };
+}
+
+const escapeText = text => String(text).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// A card's name: what the player called it, else its abilities.
+function rosterLabel(aniimo, i) {
+    if (aniimo.name.trim()) return escapeText(aniimo.name.trim());
+    const abilities = Object.entries(aniimo.abilities).map(([ability, level]) => `${ability} ${level}`).join(', ');
+    return abilities || `Aniimo ${i + 1}`;
+}
+
+function renderRoster() {
+    const editor = document.getElementById('roster-editor');
+    const cards = roster.map((aniimo, i) => {
+        const abilities = Object.entries(aniimo.abilities).map(([ability, level]) => `
+            <span class="roster-ability">${abilityTag(ability)}<span class="tabs level-picker">${[1, 2, 3, 4].map(l =>
+                `<label><input type="radio" name="roster-${i}-${ability}" data-level="${i}|${ability}" value="${l}"${l === level ? ' checked' : ''}> ${l}</label>`).join('')}</span><button type="button" class="roster-x" data-drop="${i}|${ability}" aria-label="Remove ${ability}" title="Remove ${ability}">✕</button></span>`).join('');
+        const missing = ABILITIES.map(a => a.name).filter(name => !(name in aniimo.abilities));
+        const add = missing.length
+            ? `<select class="roster-add-ability" data-add="${i}" aria-label="Add an ability"><option value="">+ Ability</option>${missing.map(name => `<option>${name}</option>`).join('')}</select>`
+            : '';
+        const personalities = PERSONALITY_PAIRS.map((pair, p) => `<span class="tabs level-picker roster-pair" role="radiogroup" aria-label="${pair.names.join(' or ')}">${pair.names.map((name, k) =>
+            `<label title="${name}"><input type="radio" name="roster-${i}-pair-${p}" data-personality="${i}|${p}" value="${name}"${aniimo.personalities[p] === name ? ' checked' : ''}> ${pair.letters[k]}</label>`).join('')}</span>`).join('');
+        return `
+            <div class="roster-card">
+                <div class="roster-head">
+                    <input type="text" class="roster-name" data-name="${i}" value="${escapeText(aniimo.name)}" placeholder="Aniimo ${i + 1}" aria-label="Name">
+                    <span class="roster-count" title="How many you have that are alike"><button type="button" data-count="${i}|-1" aria-label="One fewer">−</button><span>×${aniimo.count}</span><button type="button" data-count="${i}|1" aria-label="One more">+</button></span>
+                    <button type="button" class="roster-x" data-remove="${i}" aria-label="Remove this Aniimo" title="Remove">✕</button>
+                </div>
+                <div class="roster-abilities">${abilities}${add}</div>
+                <div class="roster-personalities">${personalities}</div>
+            </div>`;
+    }).join('');
+    editor.innerHTML = `${cards || '<p class="hint small">No Aniimo yet. Add the ones you have, or start from the Best plan\'s team.</p>'}
+        <div class="roster-actions">
+            <button type="button" class="skip-add-btn" data-roster="add">+ Add Aniimo</button>
+            ${lastBestTeam?.length ? '<button type="button" class="skip-add-btn" data-roster="from-best">Start from the Best team</button>' : ''}
+        </div>`;
+}
+
+// Plans again once the player stops changing the roster for a moment, not on every click.
+let rosterReplan = null;
+function rosterChanged(rerender = true) {
+    saveInputsToStorage();
+    if (rerender) renderRoster();
+    clearTimeout(rosterReplan);
+    rosterReplan = setTimeout(switchAniimoSetup, 700);
+}
+
+function attachRosterHandlers() {
+    const editor = document.getElementById('roster-editor');
+    editor.addEventListener('click', (e) => {
+        const button = e.target.closest('button');
+        if (!button) return;
+        const { count, remove, drop, roster: action } = button.dataset;
+        if (count) {
+            const [i, by] = count.split('|').map(Number);
+            roster[i].count = Math.max(1, roster[i].count + by);
+        } else if (remove) {
+            roster.splice(Number(remove), 1);
+        } else if (drop) {
+            const [i, ability] = drop.split('|');
+            delete roster[Number(i)].abilities[ability];
+        } else if (action === 'add') {
+            roster.push(newRosterAniimo());
+        } else if (action === 'from-best' && lastBestTeam) {
+            roster = lastBestTeam.map(g => newRosterAniimo(
+                { [g.ability]: g.level },
+                PERSONALITY_PAIRS.map(pair => pair.names.find(name => g.personalities?.has(name)) || pair.names[0]),
+            )).map((aniimo, k) => ({ ...aniimo, count: lastBestTeam[k].count }));
+        } else {
+            return;
+        }
+        rosterChanged();
+    });
+    editor.addEventListener('change', (e) => {
+        const { level, personality, add, name } = e.target.dataset;
+        if (level) {
+            const [i, ability] = level.split('|');
+            roster[Number(i)].abilities[ability] = Number(e.target.value);
+        } else if (personality) {
+            const [i, p] = personality.split('|').map(Number);
+            roster[i].personalities[p] = e.target.value;
+        } else if (add) {
+            if (!e.target.value) return;
+            roster[Number(add)].abilities[e.target.value] = 1;
+        } else if (name !== undefined) {
+            roster[Number(name)].name = e.target.value;
+            saveInputsToStorage();
+            return;
+        } else {
+            return;
+        }
+        rosterChanged();
+    });
+}
+
+// The Aniimo Team card for a roster plan: how busy each card's Aniimo are and where. A resident
+// facility keeps its Aniimo all day; environment buildings too (see `staffing`).
+function renderRosterSummary(plan) {
+    const busy = roster.map(() => 0);
+    const where = roster.map(() => new Map());
+    (plan.coin_items || []).forEach(step => {
+        if (step.crew == null || step.status !== 'producing' || !roster[step.crew]) return;
+        busy[step.crew] += RESIDENT_FACILITIES.has(step.facility) ? step.facility_count : (step.busy_units ?? step.facility_count);
+        const place = `${step.facility} (${prettyItem(step.item_name)})`;
+        where[step.crew].set(place, (where[step.crew].get(place) || 0) + step.facility_count);
+    });
+    (plan.staffing || []).forEach(([building, member, share]) => {
+        if (!roster[member]) return;
+        busy[member] += share;
+        where[member].set(building, (where[member].get(building) || 0) + share);
+    });
+    // The growing jobs (sowing, reaping and the like) take seconds a harvest, so they don't count
+    // as busy time, but someone has to do them: each goes to the least busy Aniimo able to.
+    const jobs = new Map();
+    (plan.coin_items || []).forEach(step => {
+        if (step.status !== 'producing' || !(step.facility === 'Farmland' || step.facility === 'Woodland')) return;
+        (recipeIndex.find(r => r.name === step.item_name)?.jobs || []).forEach(([job, ability, level]) => {
+            jobs.set(`${job}|${ability}|${level}|${step.facility}`, { job, ability, level, facility: step.facility });
+        });
+    });
+    jobs.forEach(({ job, ability, level, facility }) => {
+        const able = roster.map((a, i) => i).filter(i => (roster[i].abilities[ability] || 0) >= level);
+        if (!able.length) return;
+        const pick = able.reduce((a, b) => (busy[b] / roster[b].count < busy[a] / roster[a].count ? b : a));
+        const place = `${job} on ${facility}`;
+        if (!where[pick].has(place)) where[pick].set(place, 1);
+    });
+    const have = roster.reduce((sum, a) => sum + a.count, 0);
+    const working = roster.reduce((sum, a, i) => sum + Math.min(a.count, Math.ceil(busy[i] - 1e-6)), 0);
+    const rows = roster.map((aniimo, i) => {
+        const places = [...where[i]].map(([place, n]) => Number.isInteger(n) && n > 1 ? `${place} ×${n}` : place).join(', ');
+        const abilities = Object.entries(aniimo.abilities).map(([ability, level]) => `${abilityTag(ability)} ${level}`).join(' ');
+        const letters = aniimo.personalities.map(personalityLetter).join('');
+        return `<tr><td data-label="Aniimo">${rosterLabel(aniimo, i)}<div class="hint small">${abilities} · ${letters}</div></td><td data-label="How many">${aniimo.count}</td><td data-label="Busy on average">${busy[i].toFixed(1)}</td><td data-label="Where">${places || '<span class="hint small">idle</span>'}</td></tr>`;
+    }).join('');
+    document.getElementById('aniimo-summary').innerHTML = roster.length
+        ? `<table class="aniimo-table"><thead><tr><th>Aniimo</th><th>How many</th><th>Busy on average</th><th>Where</th></tr></thead><tbody>${rows}</tbody></table>
+           <p class="hint small">${working} of your ${have} Aniimo have work in this plan.</p>`
+        : '<p class="hint">Add the Aniimo you have under My Aniimo to plan with them.</p>';
+    document.getElementById('aniimo-collapsed-summary').textContent = '';
+    document.getElementById('aniimo-abilities').innerHTML = '';
+    const count = document.getElementById('aniimo-count');
+    document.getElementById('aniimo-count-have').textContent = working;
+    const of = document.getElementById('aniimo-count-of');
+    of.textContent = have;
+    of.hidden = false;
+    count.hidden = false;
+    count.classList.remove('over');
+    count.title = `${working} of your ${have} Aniimo have work in this plan`;
+}
+
 // --- Season ----------------------------------------------------------------------------
 // The Harvest Moon Festival (see `SEASON`): on the page from RV 10, or always in Advanced mode,
 // where there's no RV level to go by. While it's on, plans may use the season's recipes, bar Recipe
@@ -1371,7 +1538,7 @@ function recipeLabel(recipe) {
 async function loadRecipeIndex() {
     try {
         recipeIndex = JSON.parse(await callWorker('get_all_items'))
-            .map(r => ({ name: r.name, facility: r.facility, cost: r.cost || 0 }))
+            .map(r => ({ name: r.name, facility: r.facility, cost: r.cost || 0, environment: r.environment || null, jobs: r.jobs || [] }))
             .sort((a, b) => a.facility.localeCompare(b.facility) || a.name.localeCompare(b.name));
         document.getElementById('skip-options').innerHTML =
             recipeIndex.map(r => `<option value="${recipeLabel(r)}"></option>`).join('');
@@ -1478,14 +1645,10 @@ function levelledAbilities() {
 // as level 4; the game's own ceiling applies on top (see `max_level_for` in models.rs).
 let aniimoLevels = {};
 
-// What to send the solver for `setup`: the per-ability levels, or the Aniimo named facility by
-// facility when the player is customising (see `aniimo_setup_from` in wasm.rs).
+// What to send the solver for `setup`: the per-ability levels, or the player's roster (see
+// `aniimo_setup_from` and `JsRoster` in wasm.rs).
 function aniimoInput(setup) {
-    if (setup.startsWith('custom')) {
-        const workers = {};
-        workedFacilities().forEach(name => { workers[name] = facilityWorker(name); });
-        return { aniimo: 'custom', aniimo_levels: {}, workers };
-    }
+    if (setup.startsWith('roster')) return { aniimo: 'roster', roster: rosterPayload(), aniimo_levels: {}, workers: {} };
     const levels = {};
     levelledAbilities().forEach(ability => { levels[ability] = bestAniimoLevel(ability); });
     return { aniimo: setup.split(':')[0], aniimo_levels: levels, workers: {} };
@@ -1495,25 +1658,6 @@ function bestAniimoLevel(ability) {
     return aniimoLevels[ability] ?? defaultLevelFor(ability);
 }
 
-// True when every ability the player could have at level 4 is at level 4.
-// Every facility an Aniimo works, so a player can say what they have one by one.
-function workedFacilities() {
-    return FACILITIES.filter(f => f.hasWorker).map(f => f.name);
-}
-
-// What to assume at each facility when the player is naming them one by one.
-let aniimoByFacility = {};
-
-// The Aniimo on `name`: what the player said facility by facility, else what they said by
-// ability. A facility with no personality of its own never carries the bonus.
-function facilityWorker(name) {
-    const facility = FACILITIES.find(f => f.name === name);
-    const said = aniimoByFacility[name] || {};
-    return {
-        suitability: said.suitability ?? bestAniimoLevel(facility?.ability),
-        personality_bonus: (said.personality_bonus ?? true) && !!facility?.personality,
-    };
-}
 
 // Which of the three setups is on screen.
 function selectedSetupTab() {
@@ -1545,31 +1689,17 @@ function renderAbilityLevels() {
     }).join('');
 }
 
-// Custom: the Aniimo on each facility, its level and whether it has the facility's personality.
-function renderFacilityWorkers() {
-    const list = document.getElementById('facility-workers');
-    if (!list) return;
-    list.innerHTML = workedFacilities().map(name => {
-        const facility = FACILITIES.find(f => f.name === name);
-        const worker = facilityWorker(name);
-        const personality = facility.personality
-            ? `<label class="chip-toggle" title="The Aniimo on it has ${facility.personality}, for +20% speed"><input type="checkbox" data-personality="${name}"${worker.personality_bonus ? ' checked' : ''}> ${facility.personality}</label>`
-            : '<span class="hint small">no personality</span>';
-        return `<div class="facility-worker"><span class="facility-worker-name">${name}</span>${abilityTag(facility.ability)}${levelPicker(`worker-${name}`, worker.suitability, facility.ability, `${name} Aniimo level`)}${personality}</div>`;
-    }).join('');
-}
-
 // Shows the settings for whichever setup is picked, and works that plan out.
 function showAniimoSetup() {
     const tab = selectedSetupTab();
     document.getElementById('aniimo-setup-panel').hidden = tab === 'minimum';
     document.getElementById('ability-levels').hidden = tab !== 'best';
-    document.getElementById('facility-workers').hidden = tab !== 'custom';
+    document.getElementById('roster-editor').hidden = tab !== 'custom';
     document.getElementById('aniimo-setup-hint').textContent = tab === 'custom'
-        ? "The Aniimo you'd put on each facility. Starts from the levels you set by ability."
+        ? 'The Aniimo you have. The plan shares their hours out, so it only counts on what they can do.'
         : 'The best Aniimo you have of each ability.';
     if (tab === 'best') renderAbilityLevels();
-    if (tab === 'custom') renderFacilityWorkers();
+    if (tab === 'custom') renderRoster();
     switchAniimoSetup();
 }
 
@@ -2366,6 +2496,10 @@ function aniimoNeeds(g) {
 // frees its Aniimo), rounded up; facilities with a resident Aniimo (Sandcastle and the like) are
 // always busy, so they count one each.
 function renderAniimoSummary(plan) {
+    if (selectedSetupTab() === 'custom') {
+        renderRosterSummary(plan);
+        return;
+    }
     const container = document.getElementById('aniimo-summary');
     const groups = new Map();
     (plan.coin_items || []).forEach(step => {
@@ -2472,6 +2606,7 @@ function renderAniimoSummary(plan) {
     };
     const homelandHolds = isSimpleMode() ? ANIIMO_MAX[selectedHomeLevel() - 1] : null;
     const { kept, total: assigned } = assign();
+    if (selectedSetupTab() === 'best') lastBestTeam = kept;
     let total = assigned - kept.reduce((sum, g) => sum + g.count, 0); // the Hauling row
     const rows = kept
         .sort((a, b) => a.label.localeCompare(b.label))
@@ -3564,6 +3699,7 @@ document.addEventListener('DOMContentLoaded', () => {
     attachSpecialHandlers();
     renderSpecialRecipes();
     attachSeasonHandlers();
+    attachRosterHandlers();
     attachLayoutHandlers();
     attachPriorityHandlers();
     showAniimoSetup();
@@ -3598,14 +3734,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
         }
-        const personality = event.target.dataset?.personality;
-        if (personality) {
-            aniimoByFacility[personality] = { ...facilityWorker(personality), personality_bonus: checked };
-        } else if (name?.startsWith('level-')) {
+        if (name?.startsWith('level-')) {
             aniimoLevels[name.slice('level-'.length)] = Number(value);
-        } else if (name?.startsWith('worker-')) {
-            const facility = name.slice('worker-'.length);
-            aniimoByFacility[facility] = { ...facilityWorker(facility), suitability: Number(value) };
         } else {
             return;
         }

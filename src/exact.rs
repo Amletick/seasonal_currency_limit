@@ -1516,7 +1516,8 @@ pub fn to_production_plan(
                 is_grower: grower,
                 cycle_time: Some(recipe.production_time),
                 environment: if grower { recipe.environment.clone() } else { None },
-                busy_units: (!grower).then(|| (rate * recipe.production_time).min(units as f64)),
+                // A roster member's row says how much of its time it really takes, gathering too.
+                busy_units: (!grower || recipe.crew.is_some()).then(|| (rate * recipe.production_time).min(units as f64)),
                 crew: recipe.crew,
             });
         }

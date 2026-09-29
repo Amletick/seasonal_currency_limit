@@ -708,9 +708,13 @@ pub struct JsPlanInput {
     pub workers: std::collections::HashMap<String, JsWorker>,
     /// `"minimum"`, `"best"` or `"custom"`: plan for that [`crate::models::AniimoSetup`] and
     /// report which Aniimo each row needs (see [`JsPlanStep::aniimo`]). `"custom"` takes the
-    /// Aniimo from `workers`, facility by facility.
+    /// Aniimo from `workers`, facility by facility. `"roster"` plans with the Aniimo in `roster`
+    /// instead (see [`crate::models::Crew`]).
     #[serde(default)]
     pub aniimo: Option<String>,
+    /// The Aniimo the player has, for `"roster"`.
+    #[serde(default)]
+    pub roster: Option<JsRoster>,
     /// With `"best"`, the ability level the player has of each ability, e.g. `{"Earth": 4,
     /// "Leisure": 3}`. Aniimo level up by ability, so a player can have a level-4 one for the
     /// Mine and only a level-3 one for the Starfall Hammock. Anything left out falls back to
@@ -739,6 +743,51 @@ pub struct JsPlanInput {
     /// `"season_points"` (see [`crate::models::SEASON_POINTS`]).
     #[serde(default)]
     pub season: bool,
+}
+
+/// The player's Aniimo, and what the page knows of the facilities they work (see
+/// [`crate::models::Crew`]).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct JsRoster {
+    pub members: Vec<JsRosterAniimo>,
+    /// Facilities whose Aniimo lives there, e.g. the Tidewhisper Sandcastle.
+    #[serde(default)]
+    pub residents: Vec<String>,
+    /// The ability each environment building needs of its Aniimo, e.g. `{"Heat Furnace": "Fire"}`.
+    #[serde(default)]
+    pub environment: std::collections::BTreeMap<String, String>,
+    /// The personality each facility rewards, e.g. `{"Mine": "Playful"}`.
+    #[serde(default)]
+    pub personalities: std::collections::BTreeMap<String, String>,
+}
+
+/// One kind of Aniimo on the roster: `{"count": 2, "abilities": {"Fire": 3, "Hauling": 3},
+/// "personalities": ["Energetic", "Nimble", "Faithful", "Playful"]}`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct JsRosterAniimo {
+    pub count: u32,
+    pub abilities: std::collections::BTreeMap<String, u32>,
+    #[serde(default)]
+    pub personalities: Vec<String>,
+}
+
+impl JsRoster {
+    fn crew(&self) -> crate::models::Crew {
+        crate::models::Crew {
+            members: self
+                .members
+                .iter()
+                .map(|m| crate::models::RosterAniimo {
+                    count: m.count,
+                    abilities: m.abilities.clone(),
+                    personalities: m.personalities.clone(),
+                })
+                .collect(),
+            residents: self.residents.iter().cloned().collect(),
+            environment: self.environment.clone(),
+            personalities: self.personalities.clone(),
+        }
+    }
 }
 
 impl JsPlanInput {
@@ -1154,6 +1203,10 @@ pub struct JsProductionPlan {
     /// During the season, its points per second from everything the plan sells.
     #[serde(default)]
     pub season_points: Option<f64>,
+    /// With the player's roster, `[building, member, share of its day]` for each environment
+    /// building kind a member staffs.
+    #[serde(default)]
+    pub staffing: Vec<(String, usize, f64)>,
 }
 
 /// What a plan makes of one priority.
@@ -1215,6 +1268,7 @@ fn empty_production_plan(success: bool, error: Option<String>) -> JsProductionPl
         level_up: None,
         priorities: vec![],
         season_points: None,
+        staffing: Vec::new(),
     }
 }
 
@@ -1457,6 +1511,7 @@ pub fn exact_plan(input_json: &str, stage_json: &str, solution_json: &str) -> St
     let plan = crate::exact::to_production_plan(&exact, &prepared.items, &currency, &prepared.facility_counts);
     let mut js = prepared.to_js(plan, Some(proof));
     js.level_up = report;
+    js.staffing = exact.staffing.clone();
     if prepared.input.season {
         js.season_points = Some(crate::exact::target_rate(&exact, &prepared.items, crate::models::SEASON_POINTS));
     }
@@ -1535,6 +1590,8 @@ struct PreparedInput {
     module_levels: ModuleLevels,
     items: Vec<ProductionItem>,
     setup: Option<crate::models::AniimoSetup>,
+    /// The player's own Aniimo, when planning with them.
+    crew: Option<crate::models::Crew>,
     requirements: crate::models::AniimoRequirements,
     grower_steps: crate::models::GrowerSteps,
 }
@@ -1565,11 +1622,21 @@ impl PreparedInput {
             .as_deref()
             .and_then(|name| aniimo_setup_from(name, &input.aniimo_levels, &input.workers));
         let requirements = embedded_aniimo_requirements();
-        match &setup {
-            Some(setup) => requirements.apply(setup, &mut items),
-            None => workers_from(&input.workers).apply(&requirements, &mut items),
+        let grower_steps = embedded_grower_steps();
+        let mut facility_counts = facility_counts;
+        let crew = match (input.aniimo.as_deref(), &input.roster) {
+            (Some(name), Some(roster)) if name.starts_with("roster") => Some(roster.crew()),
+            _ => None,
+        };
+        match (&crew, &setup) {
+            (Some(crew), _) => {
+                items = crate::models::crew_variants(items, crew, &requirements, &grower_steps);
+                facility_counts.set_crew(crew.clone());
+            }
+            (None, Some(setup)) => requirements.apply(setup, &mut items),
+            (None, None) => workers_from(&input.workers).apply(&requirements, &mut items),
         }
-        Ok(PreparedInput { input, facility_counts, module_levels, items, setup, requirements, grower_steps: embedded_grower_steps() })
+        Ok(PreparedInput { input, facility_counts, module_levels, items, setup, crew, requirements, grower_steps })
     }
 
     /// The result the web page shows for `plan`, with each row's Aniimo; `proof` is the exact
@@ -1594,7 +1661,17 @@ impl PreparedInput {
             .coin_items
             .into_iter()
             .map(|step| {
-                let aniimo = match (&self.setup, &step.item_name) {
+                // With the player's roster, the row names the member working it.
+                let from_crew = match (&self.crew, step.crew, &step.item_name) {
+                    (Some(crew), Some(member), Some(item)) => crew.members.get(member).and_then(|aniimo| {
+                        let (ability, _) = self.requirements.get(item)?;
+                        let bonus = crate::models::has_personality_bonus(&step.facility)
+                            && crew.personalities.get(&step.facility).is_some_and(|p| aniimo.personalities.contains(p));
+                        Some(JsAniimo { ability: ability.to_string(), level: aniimo.level(ability), personality_bonus: bonus })
+                    }),
+                    _ => None,
+                };
+                let aniimo = from_crew.or_else(|| match (&self.setup, &step.item_name) {
                     (Some(setup), Some(item)) if step.status == crate::models::PlanStepStatus::Producing => {
                         self.requirements.get(item).map(|(ability, _)| {
                             let worker = self.requirements.worker_for_at(item, &step.facility, setup);
@@ -1606,7 +1683,7 @@ impl PreparedInput {
                         })
                     }
                     _ => None,
-                };
+                });
                 let aniimo_tasks = self
                     .setup
                     .as_ref()
@@ -1639,6 +1716,7 @@ impl PreparedInput {
             level_up: None,
             priorities: vec![],
             season_points: None,
+            staffing: Vec::new(),
         }
     }
 }
