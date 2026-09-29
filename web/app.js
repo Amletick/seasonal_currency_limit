@@ -2098,10 +2098,10 @@ function renderSeedTable(plan) {
     const per = levelUp
         ? `until RV ${planContext.target}`
         : { second: 'per second', minute: 'per minute', hour: 'per hour', day: 'per day' }[unit] || 'per second';
-    document.getElementById('seed-card-unit').textContent = 'One seed per planting, for every Farmland and Woodland crop in the plan.';
+    document.getElementById('seed-card-unit').textContent = `Seeds ${per}: one per planting, for every Farmland and Woodland crop in the plan.`;
     el.innerHTML = `
         <table>
-            <thead><tr><th>Crop</th><th>Plots</th><th>Seeds ${per}</th><th>Cost ${per}</th></tr></thead>
+            <thead><tr><th>Crop</th><th>Plots</th><th>Seeds</th><th>Cost</th></tr></thead>
             <tbody>${rows.map(r => `<tr>
                 <td>${prettyItem(r.name)}</td>
                 <td>${r.plots}</td>
