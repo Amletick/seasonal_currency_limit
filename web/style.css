@@ -2476,7 +2476,6 @@ tr:hover .skip-row,
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
-    margin-top: 0.6rem;
     font-size: 0.85rem;
     cursor: pointer;
 }
@@ -2499,47 +2498,39 @@ tr:hover .skip-row,
     fill: var(--bg, #111);
 }
 
-/* While the Storage Unit is hovered, what's carried to it (see `homelandSvg`). */
-.layout-flows {
-    display: none;
-}
-
-.layout-svg.showing-flows .layout-flows {
-    display: inline;
-}
-
-.layout-svg.showing-flows .layout-piece:not(.layout-storage-unit),
-.layout-svg.showing-flows .env-building {
-    opacity: 0.55;
-}
-
+/* Deliveries to the Storage Unit (see "Deliveries" in app.js): a piece's line shows once its
+   first batch is in. */
 .layout-flow-line {
     stroke: var(--accent);
-    stroke-opacity: 0.45;
+    stroke-opacity: 0;
     stroke-width: 0.07;
+    transition: stroke-opacity 0.4s;
 }
 
-.layout-flow-dots {
-    stroke: var(--accent);
-    stroke-width: 0.4;
-    stroke-linecap: round;
-    stroke-dasharray: 0 100;
-    animation: layout-flow linear infinite;
+.layout-flow-line.live {
+    stroke-opacity: 0.35;
 }
 
-@keyframes layout-flow {
-    from {
-        stroke-dashoffset: 100;
-    }
-    to {
-        stroke-dashoffset: 0;
-    }
+.layout-dot {
+    fill: var(--accent);
 }
 
-@media (prefers-reduced-motion: reduce) {
-    .layout-flow-dots {
-        animation: none;
-    }
+.layout-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-top: 0.6rem;
+}
+
+.layout-sim {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
 }
 
 /* Progress card under the button: each step of working out a plan. */

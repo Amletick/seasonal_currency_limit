@@ -1115,8 +1115,17 @@ function layoutHomeLevel() {
 function attachLayoutHandlers() {
     document.getElementById('layout-whole').addEventListener('change', (e) => {
         layoutShowsWhole = e.target.checked;
-        if (lastLayout) document.getElementById('layout-diagram').innerHTML = homelandSvg(lastLayout.layout, lastLayout.homeLevel);
+        if (lastLayout) drawLayout(lastLayout);
     });
+    document.getElementById('layout-replay').addEventListener('click', () => {
+        if (layoutSim) resetLayoutSim(layoutSim);
+    });
+}
+
+function drawLayout(drawn) {
+    const diagram = document.getElementById('layout-diagram');
+    diagram.innerHTML = homelandSvg(drawn.layout, drawn.homeLevel);
+    startLayoutSim(diagram.querySelector('.layout-svg'), layoutFlows(drawn.layout, drawn.plan));
 }
 
 function renderHomelandLayout(plan) {
@@ -1127,6 +1136,7 @@ function renderHomelandLayout(plan) {
     }
     const runId = ++layoutRunId;
     lastLayout = null;
+    stopLayoutSim();
     setStep('layout', 'start');
     card.style.display = 'block';
     document.getElementById('layout-summary').textContent = 'Laying out…';
@@ -1158,8 +1168,8 @@ function renderHomelandLayout(plan) {
         document.getElementById('layout-summary').textContent = `${trips > 0
             ? `${formatNumber(Math.round(trips))} trips/hour to the Storage Unit, ${(walked / trips).toFixed(1)} tiles each on average, in the ${cells.length} plot${cells.length === 1 ? '' : 's'} open at RV ${homeLevel}.`
             : 'Nothing in this plan is carried to the Storage Unit.'}${notes ? ` ${notes}` : ''}`;
-        lastLayout = { layout, homeLevel };
-        document.getElementById('layout-diagram').innerHTML = homelandSvg(layout, homeLevel);
+        lastLayout = { layout, homeLevel, plan };
+        drawLayout(lastLayout);
         setStep('layout', 'done');
     };
     layoutWorker.onerror = (event) => {
@@ -1174,6 +1184,7 @@ function renderHomelandLayout(plan) {
 
 // Stops a layout still being worked out, so it can't land over a newer plan.
 function stopLayout() {
+    stopLayoutSim();
     layoutRunId++;
     layoutWorker?.terminate();
     layoutWorker = null;
@@ -1183,11 +1194,6 @@ function stopLayout() {
 // Whether the layout shows the whole homeland rather than just what's placed; the player's toggle.
 let layoutShowsWhole = false;
 let lastLayout = null;
-
-// The Storage Unit's flow lines: the busiest piece's dots are this many tiles apart, and every
-// dot walks this many tiles a second.
-const FLOW_SPACING = 1.2;
-const FLOW_PACE = 3;
 
 function homelandSvg(layout, homeLevel) {
     // Each environment building in use covers the 9x9 square around its center, drawn under
@@ -1247,21 +1253,10 @@ function homelandSvg(layout, homeLevel) {
             stroke="${tint}" stroke-opacity="0.8" stroke-dasharray="0.35,0.25" stroke-width="0.08" />`;
     }).join('');
     const s = layout.storage;
-    // Shown while the Storage Unit is hovered: a line from everything carried to it, with dots
-    // walking it at one pace, spaced so each line's dots arrive as often as its trips do.
-    const sx = s.x + s.w / 2;
-    const sy = s.y + s.h / 2;
-    const carried = layout.pieces.flatMap(p => p.members).filter(m => m.weight > 0);
-    // Each line's length is given in units of a hundredth of its gap, so one animation over 100
-    // of them moves every line's dots on by one gap.
-    const flows = carried.map(m => {
-        const gap = FLOW_SPACING * maxTrips / m.weight;
-        const length = Math.hypot(m.x + m.w / 2 - sx, m.y + m.h / 2 - sy);
-        const d = `M${m.x + m.w / 2} ${m.y + m.h / 2} L${sx} ${sy}`;
-        return `<path d="${d}" class="layout-flow-line" />${length > 0 ? `
-            <path d="${d}" class="layout-flow-dots" pathLength="${(100 * length / gap).toFixed(3)}" style="animation-duration:${(gap / FLOW_PACE).toFixed(3)}s" />` : ''}`;
-    }).join('');
-    const totalTrips = carried.reduce((sum, m) => sum + m.weight, 0);
+    // A line from everything carried to the Storage Unit, each drawn once its first batch is in
+    // (see `startLayoutSim`), in the same order as `layoutFlows`.
+    const flows = layoutFlows(layout).map(f => `<line x1="${f.x1}" y1="${f.y1}" x2="${f.x2}" y2="${f.y2}" class="layout-flow-line" />`).join('');
+    const totalTrips = layout.pieces.flatMap(p => p.members).reduce((sum, m) => sum + (m.weight || 0), 0);
     return `<svg class="layout-svg" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}" role="img" aria-label="Homeland layout">
         <defs><pattern id="layout-locked" width="1" height="1" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
             <line x1="0" y1="0" x2="0" y2="1" class="layout-hatch" /></pattern></defs>
@@ -1270,10 +1265,151 @@ function homelandSvg(layout, homeLevel) {
         <g class="layout-coverage">${coverageShapes}</g>
         ${shapes}
         <g class="layout-coverage-edges" pointer-events="none">${coverageEdges}</g>
-        <g class="layout-flows" pointer-events="none">${flows}</g>
+        <g class="layout-flows" pointer-events="none">${flows}<g class="layout-dots"></g></g>
         <g class="layout-piece layout-storage-unit" ${tipAttrs('Storage Unit', { detail: 'Where everything is carried', stats: totalTrips > 0 ? `${formatRate(totalTrips)} trips/hour` : '' })}><rect x="${s.x + 0.04}" y="${s.y + 0.04}" width="${s.w - 0.08}" height="${s.h - 0.08}" rx="0.2" class="layout-storage" />
         <text x="${s.x + s.w / 2}" y="${s.y + s.h / 2}" font-size="0.8" class="layout-storage-text">SU</text></g>
     </svg>`;
+}
+
+// --- Deliveries ------------------------------------------------------------------------
+// The layout plays out its deliveries in sped-up game time, from the moment everything is set
+// up: each piece sends its first batch to the Storage Unit when that's ready, and one more every
+// batch after, as often as its trips per hour say.
+
+// Every piece has sent its first batch within this many real seconds, however long that takes in
+// game (at least a minute a second, at most an hour).
+const SIM_BUILD_UP = 10;
+// Tiles a second a delivery walks, in real time.
+const SIM_PACE = 4;
+let layoutSim = null;
+
+// Each piece carried to the Storage Unit: its line, when its first batch is ready (game
+// seconds; none without `plan`) and the seconds between its deliveries.
+function layoutFlows(layout, plan) {
+    const s = layout.storage;
+    const x2 = s.x + s.w / 2;
+    const y2 = s.y + s.h / 2;
+    const firstBatch = plan ? firstBatchTimes(plan) : () => 0;
+    return layout.pieces.flatMap(p => p.members).filter(m => m.weight > 0).map(m => {
+        const x1 = m.x + m.w / 2;
+        const y1 = m.y + m.h / 2;
+        return { x1, y1, x2, y2, length: Math.hypot(x2 - x1, y2 - y1), start: firstBatch(m.crop), period: 3600 / m.weight };
+    });
+}
+
+// When an item's first batch is ready, from the moment everything is set up: a crop's grow time,
+// or a recipe's own batch time after its slowest ingredient's first batch, as the planner works
+// it out (see `item_lead_time` in optimizer.rs), with the plan's own batch times.
+function firstBatchTimes(plan) {
+    const batch = new Map();
+    (plan.coin_items || []).forEach(s => {
+        if (s.status === 'producing' && s.item_name && s.cycle_time > 0) batch.set(s.item_name, Math.min(batch.get(s.item_name) ?? Infinity, s.cycle_time));
+    });
+    // An ingredient may be grown as its quick variant.
+    const made = name => (batch.has(name) ? name : batch.has(`quick_${name}`) ? `quick_${name}` : null);
+    const known = new Map();
+    const first = (name, depth = 0) => {
+        if (!name || depth > 8) return 0;
+        if (!known.has(name)) {
+            const ingredients = (recipeIndex.find(r => r.name === name)?.ingredients || []).map(made).filter(Boolean);
+            known.set(name, Math.max(0, ...ingredients.map(i => first(i, depth + 1))) + (batch.get(name) || 0));
+        }
+        return known.get(name);
+    };
+    return first;
+}
+
+function startLayoutSim(svg, flows) {
+    stopLayoutSim();
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    document.getElementById('layout-sim').hidden = !svg || flows.length === 0 || reduce;
+    if (!svg || flows.length === 0) return;
+    const lines = [...svg.querySelectorAll('.layout-flow-line')];
+    if (reduce) {
+        lines.forEach(line => line.classList.add('live'));
+        return;
+    }
+    const latest = Math.max(...flows.map(f => f.start));
+    const speed = Math.min(3600, Math.max(60, latest / SIM_BUILD_UP));
+    const sim = { svg, flows, lines, speed, layer: svg.querySelector('.layout-dots'), dots: [], frame: 0, visible: true };
+    layoutSim = sim;
+    document.getElementById('layout-clock').title = `Game time since everything was set up, at ${formatNumber(Math.round(speed))}× speed`;
+    // Only plays while the diagram is on screen.
+    sim.observer = new IntersectionObserver(([entry]) => {
+        sim.visible = entry.isIntersecting;
+        if (sim.visible && !sim.frame && layoutSim === sim) sim.frame = requestAnimationFrame(now => tickLayoutSim(sim, now));
+    });
+    sim.observer.observe(svg);
+    resetLayoutSim(sim);
+}
+
+function resetLayoutSim(sim) {
+    sim.game = 0;
+    sim.last = null;
+    sim.next = sim.flows.map(f => f.start);
+    sim.dots.forEach(dot => dot.el.remove());
+    sim.dots = [];
+    sim.lines.forEach(line => line.classList.remove('live'));
+    showSimClock(0);
+    if (!sim.frame) sim.frame = requestAnimationFrame(now => tickLayoutSim(sim, now));
+}
+
+function stopLayoutSim() {
+    if (!layoutSim) return;
+    cancelAnimationFrame(layoutSim.frame);
+    layoutSim.observer?.disconnect();
+    layoutSim = null;
+}
+
+function tickLayoutSim(sim, now) {
+    sim.frame = 0;
+    if (layoutSim !== sim || !sim.svg.isConnected) return;
+    // A long gap between frames (a hidden tab) isn't counted as time passing.
+    const dt = sim.last == null ? 0 : Math.min(now - sim.last, 100) / 1000;
+    sim.last = now;
+    sim.game += dt * sim.speed;
+    sim.flows.forEach((flow, k) => {
+        const walk = flow.length / SIM_PACE;
+        // Batches that would already have arrived aren't drawn.
+        if (sim.next[k] < sim.game - walk * sim.speed) {
+            sim.next[k] += Math.floor((sim.game - walk * sim.speed - sim.next[k]) / flow.period) * flow.period;
+        }
+        while (sim.next[k] <= sim.game) {
+            sim.lines[k].classList.add('live');
+            const age = (sim.game - sim.next[k]) / sim.speed;
+            if (age < walk) {
+                const el = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                el.setAttribute('r', '0.3');
+                el.setAttribute('class', 'layout-dot');
+                sim.layer.appendChild(el);
+                sim.dots.push({ el, flow, age });
+            }
+            sim.next[k] += flow.period;
+        }
+    });
+    sim.dots = sim.dots.filter(dot => {
+        dot.age += dt;
+        const along = (dot.age * SIM_PACE) / dot.flow.length;
+        if (along >= 1) {
+            dot.el.remove();
+            return false;
+        }
+        dot.el.setAttribute('cx', (dot.flow.x1 + (dot.flow.x2 - dot.flow.x1) * along).toFixed(2));
+        dot.el.setAttribute('cy', (dot.flow.y1 + (dot.flow.y2 - dot.flow.y1) * along).toFixed(2));
+        return true;
+    });
+    showSimClock(sim.game);
+    if (sim.visible) sim.frame = requestAnimationFrame(t => tickLayoutSim(sim, t));
+    else sim.last = null;
+}
+
+function showSimClock(seconds) {
+    const minutes = Math.floor(seconds / 60);
+    const days = Math.floor(minutes / 1440);
+    const hours = Math.floor(minutes / 60) % 24;
+    const text = `${days ? `${days}d ` : ''}${hours}h ${String(minutes % 60).padStart(2, '0')}m`;
+    const clock = document.getElementById('layout-clock');
+    if (clock.textContent !== text) clock.textContent = text;
 }
 
 // --- Progress card ---------------------------------------------------------------------
@@ -1645,7 +1781,7 @@ function recipeLabel(recipe) {
 async function loadRecipeIndex() {
     try {
         recipeIndex = JSON.parse(await callWorker('get_all_items'))
-            .map(r => ({ name: r.name, facility: r.facility, cost: r.cost || 0, seasonSeedCost: r.season_seed_cost || 0, environment: r.environment || null, jobs: r.jobs || [] }))
+            .map(r => ({ name: r.name, facility: r.facility, cost: r.cost || 0, seasonSeedCost: r.season_seed_cost || 0, environment: r.environment || null, jobs: r.jobs || [], ingredients: r.raw_materials || [] }))
             .sort((a, b) => a.facility.localeCompare(b.facility) || a.name.localeCompare(b.name));
         document.getElementById('skip-options').innerHTML =
             recipeIndex.map(r => `<option value="${recipeLabel(r)}"></option>`).join('');
@@ -3975,16 +4111,3 @@ document.addEventListener('focusin', (e) => {
 document.addEventListener('focusout', hideTip);
 window.addEventListener('scroll', hideTip, { passive: true, capture: true });
 
-// The Storage Unit's flow lines show while it's hovered (see `homelandSvg`).
-document.addEventListener('pointerover', (e) => {
-    const unit = e.target.closest?.('.layout-storage-unit');
-    document.querySelectorAll('.layout-svg.showing-flows').forEach(svg => {
-        if (!svg.contains(unit)) svg.classList.remove('showing-flows');
-    });
-    unit?.closest('.layout-svg')?.classList.add('showing-flows');
-});
-// As with tips, a tap's lines stay until the next tap.
-document.addEventListener('pointerout', (e) => {
-    const svg = e.target.closest?.('.layout-svg');
-    if (svg && e.pointerType !== 'touch' && !svg.contains(e.relatedTarget)) svg.classList.remove('showing-flows');
-});

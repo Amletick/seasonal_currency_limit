@@ -265,9 +265,12 @@
                         <p class="hint" id="layout-summary"></p>
                         <details class="explain">
                             <summary>How it's laid out</summary>
-                            <p>Every finished batch is carried to the Storage Unit (SU), so each facility is placed by its trips per hour times its straight-line distance to it: the busiest sit closest, idle ones go to the edge. Each environment building's plots can go anywhere its coverage still reaches them, so they sit on its Storage Unit side. No covered plot reaches another building's coverage, and a crop that needs an environment but is grown without one stays out of all of it, so every crop keeps the temperature the plan gave it. Crops that need no environment can go anywhere. Everything stays within the plots your RV level has open (each 20 by 15 tiles; in Advanced mode, the lowest RV level that allows what you entered), and the Storage Unit goes wherever the walking comes out least. Hover or tap a facility for its trips and distance, or the Storage Unit to see what's carried to it. This is a close-packed arrangement worked out step by step, not a proven shortest one.</p>
+                            <p>Every finished batch is carried to the Storage Unit (SU), so each facility is placed by its trips per hour times its straight-line distance to it: the busiest sit closest, idle ones go to the edge. Each environment building's plots can go anywhere its coverage still reaches them, so they sit on its Storage Unit side. No covered plot reaches another building's coverage, and a crop that needs an environment but is grown without one stays out of all of it, so every crop keeps the temperature the plan gave it. Crops that need no environment can go anywhere. Everything stays within the plots your RV level has open (each 20 by 15 tiles; in Advanced mode, the lowest RV level that allows what you entered), and the Storage Unit goes wherever the walking comes out least. Hover or tap a facility for its trips and distance. The dots play the deliveries out in sped-up game time from when everything is set up: each facility's first batch once it's ready, then one per batch. This is a close-packed arrangement worked out step by step, not a proven shortest one.</p>
                         </details>
-                        <label class="layout-whole"><input type="checkbox" id="layout-whole"> Show the whole homeland</label>
+                        <div class="layout-controls">
+                            <label class="layout-whole"><input type="checkbox" id="layout-whole"> Show the whole homeland</label>
+                            <span class="layout-sim" id="layout-sim" hidden><span id="layout-clock">0h 00m</span><button type="button" class="toggle-button small" id="layout-replay">Replay</button></span>
+                        </div>
                         <div class="layout-diagram" id="layout-diagram"></div>
                     </div>
 
