@@ -1197,11 +1197,14 @@ function homelandSvg(layout, homeLevel) {
     const sx = s.x + s.w / 2;
     const sy = s.y + s.h / 2;
     const carried = layout.pieces.flatMap(p => p.members).filter(m => m.weight > 0);
+    // Each line's length is given in units of a hundredth of its gap, so one animation over 100
+    // of them moves every line's dots on by one gap.
     const flows = carried.map(m => {
         const gap = FLOW_SPACING * maxTrips / m.weight;
-        return `<path d="M${m.x + m.w / 2} ${m.y + m.h / 2} L${sx} ${sy}" class="layout-flow-line" />
-            <path d="M${m.x + m.w / 2} ${m.y + m.h / 2} L${sx} ${sy}" class="layout-flow-dots"
-                style="--gap:${gap.toFixed(3)};stroke-dasharray:0 ${gap.toFixed(3)};animation-duration:${(gap / FLOW_PACE).toFixed(3)}s" />`;
+        const length = Math.hypot(m.x + m.w / 2 - sx, m.y + m.h / 2 - sy);
+        const d = `M${m.x + m.w / 2} ${m.y + m.h / 2} L${sx} ${sy}`;
+        return `<path d="${d}" class="layout-flow-line" />${length > 0 ? `
+            <path d="${d}" class="layout-flow-dots" pathLength="${(100 * length / gap).toFixed(3)}" style="animation-duration:${(gap / FLOW_PACE).toFixed(3)}s" />` : ''}`;
     }).join('');
     const totalTrips = carried.reduce((sum, m) => sum + m.weight, 0);
     return `<svg class="layout-svg" viewBox="${minX} ${minY} ${maxX - minX} ${maxY - minY}" role="img" aria-label="Homeland layout">
@@ -3900,3 +3903,13 @@ document.addEventListener('focusin', (e) => {
 });
 document.addEventListener('focusout', hideTip);
 window.addEventListener('scroll', hideTip, { passive: true, capture: true });
+
+// The Storage Unit's flow lines show while it's hovered (see `homelandSvg`).
+document.addEventListener('pointerover', (e) => {
+    const svg = e.target.closest?.('.layout-svg');
+    if (svg) svg.classList.toggle('showing-flows', !!e.target.closest('.layout-storage-unit'));
+});
+document.addEventListener('pointerout', (e) => {
+    const svg = e.target.closest?.('.layout-svg');
+    if (svg && !svg.contains(e.relatedTarget)) svg.classList.remove('showing-flows');
+});

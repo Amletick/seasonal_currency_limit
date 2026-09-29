@@ -2550,12 +2550,12 @@ tr:hover .skip-row,
     display: none;
 }
 
-.layout-svg:has(.layout-storage-unit:hover) .layout-flows {
+.layout-svg.showing-flows .layout-flows {
     display: inline;
 }
 
-.layout-svg:has(.layout-storage-unit:hover) .layout-piece:not(.layout-storage-unit),
-.layout-svg:has(.layout-storage-unit:hover) .env-building {
+.layout-svg.showing-flows .layout-piece:not(.layout-storage-unit),
+.layout-svg.showing-flows .env-building {
     opacity: 0.55;
 }
 
@@ -2569,12 +2569,13 @@ tr:hover .skip-row,
     stroke: var(--accent);
     stroke-width: 0.4;
     stroke-linecap: round;
+    stroke-dasharray: 0 100;
     animation: layout-flow linear infinite;
 }
 
 @keyframes layout-flow {
     from {
-        stroke-dashoffset: var(--gap);
+        stroke-dashoffset: 100;
     }
     to {
         stroke-dashoffset: 0;
