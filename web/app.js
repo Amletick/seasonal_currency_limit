@@ -731,8 +731,29 @@ function improvementCandidates(base, setup) {
     const levelsAbove = (from, to) => Array.from({ length: Math.max(0, to - from) }, (_, i) => from + 1 + i);
 
     // An Aniimo at a higher level, up to the highest the game is known to have.
+    const abilities = new Set(FACILITIES.filter(f => f.ability && owns(f.name)).map(f => f.ability));
+    if (setup.startsWith('roster') && base.roster) {
+        // One of the player's own Aniimo at a higher level, in each ability it has that matters
+        // here. Of several alike, just one is trained up, on a card of its own.
+        base.roster.members.forEach((member, i) => {
+            const who = roster[i]?.name.trim() ? escapeText(roster[i].name.trim()) : `${rosterLabel(roster[i] || member, i)} Aniimo`;
+            for (const [ability, level] of Object.entries(member.abilities).filter(([a]) => abilities.has(a))) {
+                for (const next of levelsAbove(level, defaultLevelFor(ability))) {
+                    const trained = { ...member, count: 1, abilities: { ...member.abilities, [ability]: next } };
+                    const members = member.count > 1
+                        ? [...base.roster.members.map((m, k) => (k === i ? { ...m, count: m.count - 1 } : m)), trained]
+                        : base.roster.members.map((m, k) => (k === i ? trained : m));
+                    const family = `${member.count > 1 ? 'One ' : ''}${who}: ${ability}`;
+                    candidates.push({
+                        kind: 'Aniimo', group: `roster:${i}:${ability}`, family, level: next,
+                        label: `${family} Lv.${next}`,
+                        input: { ...base, roster: { ...base.roster, members } },
+                    });
+                }
+            }
+        });
+    }
     if (setup.startsWith('best')) {
-        const abilities = new Set(FACILITIES.filter(f => f.ability && owns(f.name)).map(f => f.ability));
         for (const ability of levelledAbilities().filter(a => abilities.has(a))) {
             const level = base.aniimo_levels[ability] ?? defaultLevelFor(ability);
             for (const next of levelsAbove(level, defaultLevelFor(ability))) {
@@ -1698,7 +1719,7 @@ const escapeText = text => String(text).replace(/[&<>"]/g, c => ({ '&': '&amp;',
 
 // A card's name: what the player called it, else its abilities.
 function rosterLabel(aniimo, i) {
-    if (aniimo.name.trim()) return escapeText(aniimo.name.trim());
+    if (aniimo.name?.trim()) return escapeText(aniimo.name.trim());
     const abilities = Object.entries(aniimo.abilities).map(([ability, level]) => `${ability} ${level}`).join(', ');
     return abilities || `Aniimo ${i + 1}`;
 }
